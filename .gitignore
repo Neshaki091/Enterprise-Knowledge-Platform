@@ -29,6 +29,11 @@ wheels/
 frontend/.env.production
 frontend/.env.production.local
 
+# VPS env (chứa secret, tuyệt đối không commit)
+.env_vps
+.env_vps.*
+.env.vps
+
 # Deployment runtime (sinh tại chỗ trên VM, không commit)
 nginx/runtime/*.conf
 certbot/www/*
