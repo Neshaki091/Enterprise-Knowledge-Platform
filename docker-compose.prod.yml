@@ -1,0 +1,33 @@
+# ==============================================================================
+# Override PRODUCTION cho GCP e2-micro (DuckDNS + Let's Encrypt).
+#
+# Dùng kèm compose gốc:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# - nginx.conf production: HTTP chỉ để ACME/health/redirect; 443 nằm trong
+#   nginx/runtime/*.conf do deploy/tls/issue_tls.sh sinh ra sau khi có cert.
+# - /etc/letsencrypt mount read-only từ host (certbot chạy trên host, không trong container).
+# - ./certbot/www là webroot ACME (certbot ghi file, Nginx phục vụ HTTP-01).
+#
+# Không dùng override này cho local dev/Playwright; local giữ compose gốc.
+# ==============================================================================
+services:
+  # Giới hạn log Docker (tránh đầy đĩa 30 GB trên e2-micro khi vận hành dài ngày).
+  postgres:
+    logging: &default_logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    logging: *default_logging
+
+  nginx:
+    logging: *default_logging
+    volumes:
+      - ./nginx/prod/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/prod/security-headers-tls.conf:/etc/nginx/security-headers-tls.conf:ro
+      - ./nginx/runtime:/etc/nginx/runtime:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro

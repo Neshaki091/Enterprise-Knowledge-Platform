@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.env.local
+frontend/.env.production
+frontend/.env.production.local
+
+# Deployment runtime (sinh tại chỗ trên VM, không commit)
+nginx/runtime/*.conf
+certbot/www/*
+!certbot/www/.gitkeep
+
+# Local production-stack test (secrets + cert tự ký, không commit)
+.env.local-test
+deploy/local-test/tls/
+
+# Databases & Local Storage
+*.sqlite3
+*.db
+backend/storage/indexes/*.index
+backend/storage/indexes/*.faiss
+!backend/storage/indexes/.gitkeep
+
+# IDEs & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+frontend/playwright-report/
+frontend/test-results/
+tmp_f2_test/
+
+# Endpoint-test artifacts (chứa JWT/refresh token, không commit)
+endpoint_test/endpoint_test_report_*.md
+endpoint_test/latest_results.json
+endpoint_test/bugs_detected.json
+endpoint_test/ENDPOINT_TEST_REPORT.md
+
+# Runtime tokens & secrets sinh cục bộ
+.dev/
+*.pem
+*.key
+*.log
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+
+# Bản sao trùng của SR.md
+SR (1).md

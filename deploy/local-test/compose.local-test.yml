@@ -1,0 +1,25 @@
+# ==============================================================================
+# Override CHỈ dùng để kiểm thử production stack trên máy local.
+# - Volume mới, không đụng dữ liệu dev/Phase 2.
+# - Mount cert tự ký thay cho /etc/letsencrypt của host.
+# - Dùng kèm:
+#   docker compose --env-file .env.local-test \
+#     -f docker-compose.yml -f docker-compose.prod.yml \
+#     -f deploy/local-test/compose.local-test.yml up -d --build
+# ==============================================================================
+services:
+  postgres:
+    volumes:
+      - postgres_data_local_test:/var/lib/postgresql/data
+
+  backend:
+    volumes:
+      - faiss_storage_local_test:/app/backend/storage/indexes
+
+  nginx:
+    volumes:
+      - ./deploy/local-test/tls:/etc/letsencrypt:ro
+
+volumes:
+  postgres_data_local_test:
+  faiss_storage_local_test:

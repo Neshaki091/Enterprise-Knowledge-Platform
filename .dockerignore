@@ -1,0 +1,39 @@
+# Bí mật & môi trường cục bộ
+.env
+backend/.env
+*.pem
+*.key
+
+# Môi trường ảo, cache, build artifacts
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.git
+.github
+
+# Dữ liệu runtime (index FAISS, DB test, báo cáo)
+backend/storage
+endpoint_test
+*.db
+*.sqlite
+*.sqlite3
+
+# Tài liệu / kế hoạch không cần trong image production
+task
+*.md
+
+# Frontend node_modules / build & test artifacts (Phase 2)
+frontend/node_modules
+frontend/dist
+frontend/e2e
+frontend/playwright.config.ts
+frontend/playwright-report
+frontend/test-results
+node_modules
+tmp_f2_test

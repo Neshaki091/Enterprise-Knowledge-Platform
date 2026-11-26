@@ -1,0 +1,112 @@
+# ==============================================================================
+# Docker Compose for Enterprise AI Knowledge Platform (Production Low-Memory Profile)
+# Strictly tuned for GCP Always Free e2-micro (1.0 GB RAM Budget + 4GB Swap)
+# ==============================================================================
+
+services:
+  # 1. Cơ sở dữ liệu duy nhất (PostgreSQL 16 Low-Memory)
+  postgres:
+    image: postgres:16-alpine
+    container_name: saas_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_knowledge_db}
+      APP_DB_USER: ${APP_DB_USER:-saas_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}
+    # Cấu hình tối ưu bộ nhớ RAM tuyệt đối: shared_buffers=128MB, max_connections=20
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c max_connections=20
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c effective_cache_size=256MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=4MB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Chỉ chạy khi volume còn trống: tạo role ứng dụng không đặc quyền cho RLS.
+      - ./scripts/init_db_app_role.sh:/docker-entrypoint-initdb.d/10_init_app_role.sh:ro
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. FastAPI Modular Monolith Backend (1 Async Worker)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_fastapi_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      POSTGRES_SERVER: postgres
+      POSTGRES_PORT: 5432
+      # Backend kết nối bằng role ứng dụng NOSUPERUSER/NOBYPASSRLS, không dùng postgres.
+      POSTGRES_USER: ${APP_DB_USER:-saas_app}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_knowledge_db}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set to a random value >= 32 chars}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://yourdomain.com}
+      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-26214400}
+      DB_RLS_ENABLED: "true"
+      FAISS_INDEX_STORAGE_PATH: /app/backend/storage/indexes
+      # AI Inference (truyền từ .env của môi trường triển khai; không bake vào image).
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-google}
+      LLM_MODEL: ${LLM_MODEL:-gemma-4-26b-a4b-it}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-google}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-gemini-embedding-001}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-786}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-10}
+      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+    volumes:
+      - faiss_storage:/app/backend/storage/indexes
+    # Không publish trực tiếp ra host: mọi traffic đi qua Nginx (80/443).
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        limits:
+          memory: 350M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # 3. Frontend SPA + Nginx Reverse Proxy (build tĩnh, SSE, security headers)
+  nginx:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: saas_nginx_proxy
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+
+volumes:
+  postgres_data:
+  faiss_storage:

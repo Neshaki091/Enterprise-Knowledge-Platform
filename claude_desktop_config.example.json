@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "enterprise-knowledge-base": {
+      "command": "python",
+      "args": [
+        "-m",
+        "app.mcp.cli",
+        "--tenant-id",
+        "YOUR_TENANT_UUID_HERE"
+      ],
+      "cwd": "C:\\path\\to\\Enterprise-Knowledge-Platform\\backend",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}
