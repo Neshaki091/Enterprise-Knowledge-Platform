@@ -13,6 +13,11 @@ Trình duyệt ──HTTPS──► Vercel (*.vercel.app, SPA tĩnh)
 Chi phí: GCP Always Free (e2-micro, 1 GB egress/tháng) + DuckDNS $0 + Let's Encrypt $0
 + Vercel Hobby $0. Ràng buộc thật sự là **egress ≤ 1 GB/tháng** (ngân sách Sprint 9: 0,6–0,8 GB).
 
+> **Phương án khuyến nghị — VPS không build:** build image backend + nginx trên máy
+> local, push lên Docker Hub/GHCR, VPS chỉ `pull` và chạy
+> `docker-compose.registry.yml`. Xem [registry/README.md](registry/README.md).
+> Runbook dưới đây là phương án build trực tiếp trên VM (fallback khi không dùng registry).
+
 ---
 
 ## 0. Chuẩn bị
@@ -81,6 +86,19 @@ gcloud compute firewall-rules create allow-http-https \
 Gắn network tag `http-server` cho VM. **Không** mở 5432/8000.
 
 ## 5. Khởi động stack production (bootstrap HTTP)
+
+**Phương án registry (khuyến nghị, VPS không build):**
+
+```bash
+# .env phải có DOCKER_IMAGE_PREFIX và IMAGE_TAG (xem registry/README.md)
+docker compose --env-file .env -f docker-compose.registry.yml pull
+docker compose --env-file .env -f docker-compose.registry.yml up -d --remove-orphans
+curl -fsS http://127.0.0.1/health
+```
+
+Hoặc dùng script: `sudo bash deploy/registry/deploy_vps.sh`.
+
+**Phương án build trực tiếp trên VM (fallback):**
 
 ```bash
 sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -163,7 +181,8 @@ RLS fail-closed, rate limit, 413): xem [local-test/README.md](local-test/README.
 - **Về Phase 2 single-origin (HTTP, SPA trong Nginx)**:
   `sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml down`
   rồi `sudo docker compose up -d --build`.
-- **Rollback phiên bản app**: nếu dùng git, `git checkout <tag>`; nếu không, giữ một bản copy thư mục release trước đó và chạy lại `sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` từ bản đó.
+- **Rollback phiên bản app (registry)**: sửa `IMAGE_TAG` trong `.env` về tag cũ rồi chạy `sudo bash deploy/registry/deploy_vps.sh`; volume dữ liệu và cert được giữ nguyên.
+- **Rollback phiên bản app (build tại chỗ)**: nếu dùng git, `git checkout <tag>`; nếu không, giữ một bản copy thư mục release trước đó và chạy lại `sudo docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build` từ bản đó.
 
 ## 11. Bảo mật
 

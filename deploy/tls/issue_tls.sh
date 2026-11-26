@@ -38,8 +38,8 @@ if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
     exit 1
 fi
 
-if [ ! -f "${REPO_ROOT}/docker-compose.prod.yml" ]; then
-    echo "Không tìm thấy docker-compose.prod.yml trong ${REPO_ROOT}." >&2
+if [ ! -f "${REPO_ROOT}/docker-compose.prod.yml" ] && [ ! -f "${REPO_ROOT}/docker-compose.registry.yml" ]; then
+    echo "Không tìm thấy docker-compose.prod.yml hoặc docker-compose.registry.yml trong ${REPO_ROOT}." >&2
     exit 1
 fi
 
@@ -62,7 +62,11 @@ fi
 # ------------------------------------------------------------------------------
 if ! docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -qx true; then
     echo "Container $CONTAINER_NAME chưa chạy. Khởi động stack production trước:" >&2
-    echo "  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build" >&2
+    if [ -f "${REPO_ROOT}/docker-compose.registry.yml" ]; then
+        echo "  docker compose --env-file .env -f docker-compose.registry.yml up -d" >&2
+    else
+        echo "  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build" >&2
+    fi
     exit 1
 fi
 

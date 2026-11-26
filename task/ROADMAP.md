@@ -42,7 +42,7 @@
 >
 > **Topology Phase 3:** Frontend SPA tĩnh trên Vercel (`*.vercel.app`) ➔ gọi API/SSE trực tiếp tới backend GCP `e2-micro` qua Nginx TLS (DuckDNS + Let's Encrypt). Không dùng `http://ExIP` trần vì trình duyệt chặn mixed content; asset tĩnh chuyển sang Vercel giúp giảm egress origin.
 >
-> **Bộ deploy một lần (đã có trong repo):** [deploy/README.md](deploy/README.md) — DuckDNS updater (systemd timer 5 phút), certbot webroot + deploy hook reload Nginx, `docker-compose.prod.yml` (ACME + TLS 443), `frontend/vercel.json` (SPA fallback, CSP, cache). Cert/DNS tự gia hạn, chạy nhiều tháng không cần cấu hình lại.
+> **Bộ deploy một lần (đã có trong repo):** [deploy/README.md](deploy/README.md) — DuckDNS updater (systemd timer 5 phút), certbot webroot + deploy hook reload Nginx, `frontend/vercel.json` (SPA fallback, CSP, cache). Cert/DNS tự gia hạn, chạy nhiều tháng không cần cấu hình lại. **Khuyến nghị:** build image local → push registry → VPS chỉ pull ([deploy/registry/README.md](deploy/registry/README.md)); `docker-compose.prod.yml` là fallback build trực tiếp trên VM.
 
 | Sprint | Giai đoạn | Tên Sprint & Trọng tâm | Trạng thái | File chi tiết |
 |---|---|---|---|---|

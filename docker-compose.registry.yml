@@ -1,0 +1,140 @@
+# ==============================================================================
+# Production deployment from a container registry (Docker Hub / GHCR).
+#
+# Mục đích: VPS KHÔNG build source. Image backend + nginx được build trên máy
+# local, push lên registry, VPS chỉ pull và chạy file compose này.
+#
+#   # Trên VPS (repo đã clone để lấy config Nginx, script TLS, certbot webroot):
+#   docker compose --env-file .env -f docker-compose.registry.yml pull
+#   docker compose --env-file .env -f docker-compose.registry.yml up -d --remove-orphans
+#
+# Biến bắt buộc trong .env:
+#   DOCKER_IMAGE_PREFIX   # vd: neshaki091 (Docker Hub) hoặc ghcr.io/neshaki091
+#   IMAGE_TAG             # vd: 2.1.0 hoặc git short SHA; không dùng latest cho production
+#   POSTGRES_PASSWORD, APP_DB_PASSWORD, SECRET_KEY, CORS_ALLOW_ORIGINS, ...
+#
+# Khác với docker-compose.prod.yml: file này KHÔNG có mục `build`, nên không
+# bao giờ biên dịch source trên VPS (tiết kiệm RAM/CPU e2-micro).
+# ==============================================================================
+
+name: ekp
+
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # 1. Cơ sở dữ liệu duy nhất (PostgreSQL 16 Low-Memory)
+  postgres:
+    image: postgres:16-alpine
+    container_name: saas_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_knowledge_db}
+      APP_DB_USER: ${APP_DB_USER:-saas_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c max_connections=20
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c effective_cache_size=256MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=4MB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Chỉ chạy khi volume còn trống: tạo role ứng dụng không đặc quyền cho RLS.
+      - ./scripts/init_db_app_role.sh:/docker-entrypoint-initdb.d/10_init_app_role.sh:ro
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default_logging
+
+  # 2. FastAPI image kéo từ registry (không build trên VPS)
+  backend:
+    image: ${DOCKER_IMAGE_PREFIX:?DOCKER_IMAGE_PREFIX must be set}/ekp-backend:${IMAGE_TAG:?IMAGE_TAG must be set}
+    container_name: saas_fastapi_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      POSTGRES_SERVER: postgres
+      POSTGRES_PORT: 5432
+      # Backend kết nối bằng role ứng dụng NOSUPERUSER/NOBYPASSRLS, không dùng postgres.
+      POSTGRES_USER: ${APP_DB_USER:-saas_app}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_knowledge_db}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set to a random value >= 32 chars}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://yourdomain.com}
+      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-26214400}
+      DB_RLS_ENABLED: "true"
+      FAISS_INDEX_STORAGE_PATH: /app/backend/storage/indexes
+      # AI Inference: truyền lúc chạy, không bake vào image.
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-google}
+      LLM_MODEL: ${LLM_MODEL:-gemma-4-26b-a4b-it}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-google}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-gemini-embedding-001}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-786}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-10}
+      EMBEDDING_API_URL: ${EMBEDDING_API_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+    volumes:
+      - faiss_storage:/app/backend/storage/indexes
+    # Không publish trực tiếp ra host: mọi traffic đi qua Nginx (80/443).
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        limits:
+          memory: 350M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging: *default_logging
+
+  # 3. Nginx + SPA image kéo từ registry; config production mount từ repo.
+  nginx:
+    image: ${DOCKER_IMAGE_PREFIX:?DOCKER_IMAGE_PREFIX must be set}/ekp-nginx:${IMAGE_TAG:?IMAGE_TAG must be set}
+    container_name: saas_nginx_proxy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/prod/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/prod/security-headers-tls.conf:/etc/nginx/security-headers-tls.conf:ro
+      # File 10-tls.conf do deploy/tls/issue_tls.sh sinh ra sau khi có cert.
+      - ./nginx/runtime:/etc/nginx/runtime:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+    logging: *default_logging
+
+volumes:
+  postgres_data:
+  faiss_storage:
