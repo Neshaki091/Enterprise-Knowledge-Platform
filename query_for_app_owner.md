@@ -1,4 +1,4 @@
-# query_for_app_owner.md — Sổ tay Vấn đáp Kỹ thuật: Bug Fixes, Tối ưu Hiệu năng & Thử thách Dành cho App Owner
+# query_for_app_owner.md — Sổ tay Vấn đáp Kỹ thuật: Bug Fixes, Tối ưu Hiệu năng, Triển khai Production & Thử thách Dành cho App Owner
 
 **Dự án:** Enterprise AI Knowledge Platform (Multi-Tenant SaaS)  
 **Tài liệu dành cho:** App Owner / Tech Lead / Lead Architect  
@@ -23,7 +23,7 @@ Một kỹ sư chỉ thực sự làm chủ dự án khi có khả năng **trả
 - **Bản chất kỹ thuật (Root Cause):**
   - Trên Windows với Python 3.8+, thư viện `asyncio` mặc định sử dụng `ProactorEventLoop` (dựa trên I/O Completion Ports - IOCP).
   - Khi một event loop hoặc background thread được khởi tạo, nó gọi hàm `socket.socketpair()` trong `socket.py`.
-  - Trên Windows, do hệ điều hành không hỗ trợ `AF_UNIX` socketpair nguyên bản như POSIX, Python giả lập bằng cách mở một listening socket trên `127.0.0.1` rồi tạo kết nối TCP loopback (`connect()` $\rightarrow$ `accept()`).
+  - Trên Windows, do hệ điều hành không hỗ trợ `AF_UNIX` socketpair nguyên bản như POSIX, Python giả lập bằng cách mở một listening socket trên địa chỉ loopback rồi tạo kết nối TCP loopback (`connect()` $\rightarrow$ `accept()`).
   - Trong môi trường sandbox kiểm soát nghiêm ngặt mạng (Standard Sandbox Mode), kết nối loopback bị chặn hoặc chờ xác thực, khiến hàm `connect()` bị block vĩnh viễn.
 - **Giải pháp:** Cấu hình quyền loopback cục bộ cho test runner (`BypassSandbox: true`), các socketpair kết nối thành công trong 0.001s, 16/16 test cases chạy hoàn tất trong 3.85s.
 - **❓ Câu hỏi chất vấn App Owner:**
@@ -332,4 +332,179 @@ Một kỹ sư chỉ thực sự làm chủ dự án khi có khả năng **trả
 - **❓ Câu hỏi chất vấn App Owner:**
   > *"Tại sao không giữ toàn bộ Parent Chunk mà lại nén theo từng câu có neo Child Chunk trước khi gửi cho Gemma 4 26B? Việc hoàn trả token qua `reconcile_tokens()` giúp hệ thống xử lý nhiều câu hỏi đồng thời hơn dưới giới hạn 16K TPM như thế nào?"*
 
-*(Các câu hỏi cho Sprint 4 đến Sprint 10 sẽ được bổ sung tự động theo tiến độ thực thi)*
+*(Các câu hỏi cho Sprint 4 đến Sprint 10 sẽ được bổ sung theo tiến độ thực thi.)*
+
+---
+
+## PHẦN 5: NHẬT KÝ TRIỂN KHAI PRODUCTION & BÀI HỌC XƯƠNG MÁU (DEPLOYMENT RETROSPECTIVE)
+
+> **Bối cảnh:** triển khai EKP lên GCP e2-micro (1 GB RAM, 30 GB disk) ngày 2026-11-26: backend HTTPS qua DuckDNS + Let's Encrypt, frontend Vercel, image build local rồi push Docker Hub, VPS chỉ pull. Đây là các lỗi thật đã gặp, bằng chứng đo được và cách xử lý — không phải mô phỏng.
+
+### 5.1 Kết quả đo được
+
+| Hạng mục | Kết quả thực tế |
+|---|---|
+| Image backend / nginx | 584 MB / 74,7 MB; tag `2.1.0` + `latest`; kiến trúc `linux/amd64` |
+| VPS disk | 30 GB; sau khi xóa waterbase còn ~20 GB trống |
+| Pull + start | 3 image (backend, nginx, `postgres:16-alpine`), stack healthy |
+| HTTPS | Let's Encrypt cert hạn 2027-02-24; `certbot.timer` active |
+| Health | `database:connected`, `faiss_storage_ready:true`, `llm_real_configured:true`, `embedding_real_configured:true` |
+| Frontend → backend | `POST /api/v1/auth/register` → `201`; ACAO đúng origin Vercel |
+| Clean clone frontend | `npm ci && npm run build` → 1.995 modules, build thành công |
+| RLS | role `saas_app` thấy 0 dòng khi thiếu tenant context (fail-closed) |
+
+### 5.2 Bài học 01 — `.gitignore` sai phạm vi làm Vercel build fail
+
+**Triệu chứng:** local `npm run build` pass; Vercel clean clone báo hàng loạt:
+
+```text
+Cannot find module '@/lib/types' or its corresponding type declarations
+Cannot find module '@/lib/utils' ...
+```
+
+**Nguyên nhân:** `.gitignore` có pattern Python `lib/` (không có `/` ở đầu). Git hiểu là ignore **mọi thư mục tên `lib` ở mọi cấp**, gồm `frontend/src/lib/`. Bảy file `api-client.ts`, `api.ts`, `types.ts`, `utils.ts`, `labels.ts`, `navigation.ts`, `session.ts` chưa từng được commit. Local có file nên không thấy lỗi.
+
+**Cách sửa:**
+
+```gitignore
+/lib/
+/lib64/
+```
+
+Commit đủ 7 file rồi kiểm chứng bằng clone sạch:
+
+```bash
+git clone <repo> /tmp/ekp-check
+cd /tmp/ekp-check/frontend
+npm ci && npm run build
+```
+
+**Bài học:**
+- Pattern không có `/` đầu là recursive; pattern có `/` cuối chỉ khớp thư mục.
+- Luôn build từ **clean clone** trước khi tin kết quả local/CI; dùng `git status --ignored` để soi file bị bỏ sót.
+- Nên thêm job CI `npm ci && npm run build` cho frontend để bắt lỗi này sớm.
+
+### 5.3 Bài học 02 — Vite env, CSP, CORS và lỗi 405
+
+**Triệu chứng:** bấm đăng ký trên Vercel, request đi tới
+`https://<project>.vercel.app/api/v1/auth/register` → `405 Method Not Allowed`;
+response có `content-disposition: inline; filename="index.html"`.
+
+**Chẩn đoán:**
+- `405 + index.html` là SPA fallback của Vercel, **không phải lỗi CORS**.
+- Nguyên nhân: build Vercel không có `VITE_API_BASE_URL`, nên `API_BASE = ""` → gọi same-origin. Vite chỉ đọc biến `VITE_*` **lúc build**.
+- CORS backend thực tế đã đúng: preflight `OPTIONS` trả `200` + `Access-Control-Allow-Origin` đúng origin Vercel.
+
+**Cách sửa:**
+1. Vercel → Settings → Environment Variables → **Production**:
+   `VITE_API_BASE_URL=https://<ten>.duckdns.org`.
+2. Redeploy, không dùng build cache cũ.
+3. `frontend/vercel.json` CSP phải có:
+   `connect-src 'self' https://<ten>.duckdns.org`.
+
+**Bài học — phân biệt 3 tầng:**
+
+| Hiện tượng | Bản chất | Cách kiểm tra |
+|---|---|---|
+| 405 + `index.html`, request tới domain frontend | Sai `VITE_API_BASE_URL` (same-origin) | DevTools → Network → Request URL |
+| Trình duyệt báo CORS, request tới backend | Backend thiếu ACAO/preflight | `OPTIONS` với `Origin` + `Access-Control-Request-Method` |
+| CSP violation `connect-src` | `vercel.json` thiếu host backend | DevTools Console + header CSP |
+
+- `VITE_*` là build-time; đổi env phải build lại.
+- CSP là tĩnh trong `vercel.json`; CORS là runtime ở backend.
+- Domain `https://<project>.vercel.app` có thể đã thuộc app khác; luôn lấy đúng domain trong tab **Domains** của project.
+
+### 5.4 Bài học 03 — Build local, push registry, VPS chỉ pull
+
+**Kiến trúc đã chọn:**
+
+```text
+Local: docker build backend + nginx → docker push :TAG + :latest
+VPS:   docker compose pull → up -d (KHÔNG build, KHÔNG npm/pip)
+```
+
+**Vì sao không build trên e2-micro:**
+- 1 GB RAM: `npm ci` + `tsc` + `vite build` và `pip install faiss-cpu` dễ OOM, phải bật swap 4 GB và rất chậm.
+- Image là artifact bất biến: cùng digest chạy local test và VPS, dễ rollback.
+- VPS không cần toolchain Node/gcc/Python headers → giảm bề mặt tấn công.
+
+**Bài học vận hành:**
+- `docker-compose.registry.yml` không có mục `build`, đặt `name: ekp`, container name cố định để TLS script tìm đúng.
+- **Dọn VPS phải có phạm vi:** script mặc định chỉ xóa `saas_*`/`ekp_*`; `--all` sẽ xóa mọi project Docker. VPS đang chạy waterbase — phải hỏi và xác nhận trước khi xóa.
+- `docker compose down -v` xóa **volume PostgreSQL/FAISS** = mất dữ liệu. Backup trước; không xóa `/etc/letsencrypt` và `/etc/duckdns`.
+- Kiểm tra cổng trước khi deploy: `sudo ss -ltnp | grep -E ':(80|443)\b'`. Container nginx của project cũ giữ cổng 80 là lỗi phổ biến.
+- Cập nhật phiên bản: build tag mới → push → sửa `IMAGE_TAG` trong `.env` → `deploy_vps.sh`; volume/cert giữ nguyên. Rollback bằng tag cũ, không rebuild.
+- Docker Hub public chứa toàn bộ source backend trong image; nếu cần giấu source, dùng GHCR private.
+
+### 5.5 Bài học 04 — Env production fail-closed
+
+Các lỗi cấu hình thật đã gặp:
+
+- `SECRET_KEY` 23 ký tự bị backend từ chối vì `< 32`; phải dùng chuỗi random ≥ 32 ký tự (file chuẩn dùng 64 hex).
+- Thiếu `APP_DB_PASSWORD` → Compose fail ngay ở interpolation (`APP_DB_PASSWORD must be set`).
+- `POSTGRES_SERVER=localhost` là bẫy dev; trong Docker network phải là `postgres`.
+- `DB_RLS_ENABLED=True`; role ứng dụng `saas_app` phải `NOSUPERUSER/NOBYPASSRLS`; init role chỉ chạy khi volume PostgreSQL còn trống.
+- `.env` phải `chmod 600`; không commit. Chỉ `.env.example` được public.
+- Đổi `POSTGRES_PASSWORD`/`APP_DB_PASSWORD` sau khi volume đã khởi tạo không đủ: phải `ALTER ROLE` trong PostgreSQL rồi restart backend, nếu không sẽ mất kết nối DB.
+- File `.env_vps` từng nằm trong working tree; phải ignore rõ ràng (`.env_vps`, `.env_vps.*`) và kiểm tra `git ls-tree -r origin/main` chỉ có file `.example`.
+
+### 5.6 Bài học 05 — DuckDNS & Let's Encrypt
+
+- Đăng nhập DuckDNS bằng GitHub **không phải email**. Let's Encrypt cần email thật; `neshaki@github` không hợp lệ.
+- Token DuckDNS là UUID **36 ký tự** (8-4-4-4-12). Token 35 ký tự do gõ thiếu → API trả `KO`; phải copy, không gõ tay.
+- `DUCKDNS_DOMAIN` chỉ là subdomain, **không** kèm `.duckdns.org`.
+- Reset token làm token cũ chết ngay; phải cập nhật `/etc/duckdns/duckdns.env` rồi restart service.
+- Cột `current ip` trên web DuckDNS là IP của **trình duyệt** đang mở trang, không chắc là IP VPS. Chỉ tin updater chạy trên VPS.
+- HTTP-01 cần cổng 80; `issue_tls.sh` kiểm tra DNS trước khi xin cert để tránh đốt rate limit.
+- Kiểm tra TLS qua loopback (dùng `--resolve` trỏ domain về máy local) **không chứng minh** cổng 443 mở từ Internet. Phải test từ laptop/browser và kiểm tra **GCP VPC firewall** (UFW chỉ là lớp trong máy).
+- Cert name cố định `saas-backend`; `certbot.timer` tự renew; chạy `certbot renew --dry-run` sau khi deploy.
+
+### 5.7 Bài học 06 — Bảo mật trong lúc vận hành
+
+- Ảnh chụp tab SSH có `.env` làm lộ `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `GOOGLE_API_KEY`. Coi như đã lộ: rotate Google API key và `SECRET_KEY` ngay; DB password chỉ rotate nếu cần (DB không publish ra Internet).
+- Không chụp màn hình `.env`, không mở tab SSH-in-browser chứa secret khi screen-share.
+- DuckDNS token từng lộ trong ảnh: recreate token, cập nhật `/etc/duckdns/duckdns.env`, restart updater.
+- Image public trên Docker Hub chứa source backend. Đây là trade-off chấp nhận cho portfolio; nếu cần private, chuyển GHCR.
+- `.dockerignore` phải chặn `.env`, `*.pem`, `*.key`, `backend/storage`, tests/reports. Kiểm tra image bằng `docker run --rm <image> env`/`find` nếu nghi ngờ.
+
+### 5.8 Checklist tái sử dụng (một trang)
+
+**Trước deploy:**
+- [ ] Clean clone build frontend: `npm ci && npm run build`.
+- [ ] `pytest backend/tests -q` pass.
+- [ ] `.env` có đủ secret, `chmod 600`; `SECRET_KEY` ≥ 32; `APP_DB_PASSWORD` không rỗng.
+- [ ] `DOCKER_IMAGE_PREFIX` + `IMAGE_TAG` trỏ đúng image đã push.
+- [ ] Cổng 80/443 trống; UFW và GCP VPC firewall mở 80/443.
+- [ ] DNS trỏ đúng IP VPS; token DuckDNS đúng 36 ký tự.
+- [ ] Đĩa còn đủ cho image + DB + swap + backup.
+
+**Deploy:**
+- [ ] `bootstrap_vps.sh` hoặc `deploy_vps.sh` pull/up thành công.
+- [ ] `/health` healthy, `llm_real_configured:true`.
+- [ ] TLS cấp thành công; test HTTPS từ ngoài.
+- [ ] CORS preflight đúng origin Vercel.
+- [ ] Vercel có `VITE_API_BASE_URL` và CSP đúng host backend.
+
+**Sau deploy:**
+- [ ] Đăng ký/login; upload; search; chat SSE.
+- [ ] Kiểm tra RLS bằng role `saas_app`.
+- [ ] `docker stats --no-stream`, `df -h`, `free -h`.
+- [ ] `certbot renew --dry-run`.
+- [ ] Rotate mọi secret từng xuất hiện trong ảnh chụp/chia sẻ.
+
+### 5.9 Câu hỏi tự vấn (dùng để bảo vệ trước Tech Lead)
+
+1. Vì sao `npm run build` ở local pass nhưng Vercel clean clone fail? Pattern `.gitignore` nào gây ra và sửa thế nào?
+2. Lỗi `405 + index.html` khác CORS và CSP ở chỗ nào? Kiểm tra từng lỗi bằng lệnh/DevTools nào?
+3. Vì sao `VITE_API_BASE_URL` đổi xong phải redeploy, còn `CORS_ALLOW_ORIGINS` chỉ cần restart backend?
+4. Vì sao không build image trên e2-micro? Nêu 3 lý do về RAM, tốc độ và bề mặt tấn công.
+5. `docker compose down -v` xóa những gì? Vì sao không được chạy `--all` khi VPS còn project khác?
+6. Token DuckDNS 35 ký tự gây lỗi gì? Vì sao reset token làm updater fail?
+7. Vì sao TLS kiểm tra qua loopback vẫn có thể thất bại từ Internet? Lớp firewall nào còn thiếu?
+8. `SECRET_KEY` 23 ký tự bị từ chối ở đâu? Cơ chế fail-closed nằm ở file nào?
+9. Public Docker Hub image có rủi ro gì về source code? Khi nào nên dùng GHCR?
+10. Nếu phát hiện secret trong ảnh chụp, quy trình rotate gồm những bước nào và dịch vụ nào bị ảnh hưởng?
+11. Làm sao rollback phiên bản backend mà không rebuild và không mất dữ liệu?
+12. Sau lần deploy này, nên thêm check gì vào CI để không tái diễn lỗi frontend thiếu file?
+
+---
