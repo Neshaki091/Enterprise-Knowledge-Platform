@@ -316,3 +316,62 @@ export interface HealthResponse {
   service: string;
   version: string;
 }
+
+export type ExternalDbType = "postgresql" | "sqlite";
+
+export interface ExternalDBConnectorCreate {
+  name: string;
+  db_type: ExternalDbType;
+  connection_uri: string;
+  tenant_secret: string;
+  allowed_tables: string[];
+}
+
+export interface ExternalDBConnectorResponse {
+  id: string;
+  tenant_id: string;
+  name: string;
+  db_type: ExternalDbType | string;
+  host_masked: string;
+  allowed_tables: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface ExternalDBTokenRequest {
+  connector_id: string;
+  tenant_secret: string;
+  expires_minutes?: number;
+}
+
+export interface ExternalDBTokenResponse {
+  db_jwt: string;
+  token_type: string;
+  connector_id: string;
+  allowed_tables: string[];
+  expires_in_seconds: number;
+}
+
+export interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+export interface McpJsonRpcResponse<T = Record<string, unknown>> {
+  jsonrpc: string;
+  id: string | number | null;
+  result?: T;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface ExternalDBQueryResult {
+  connector_id: string;
+  connector_name: string;
+  row_count: number;
+  rows: Record<string, unknown>[];
+}

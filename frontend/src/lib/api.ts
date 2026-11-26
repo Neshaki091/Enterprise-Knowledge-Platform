@@ -11,7 +11,12 @@ import type {
   DocumentDetailResponse,
   DocumentResponse,
   EmployeeWorkspaceDashboard,
+  ExternalDBConnectorCreate,
+  ExternalDBConnectorResponse,
+  ExternalDBTokenRequest,
+  ExternalDBTokenResponse,
   HealthResponse,
+  McpJsonRpcResponse,
   MemberResponse,
   MembershipSummary,
   PlatformAdminDashboard,
@@ -180,4 +185,22 @@ export const dashboardApi = {
 
 export const systemApi = {
   health: (): Promise<HealthResponse> => request<HealthResponse>("/api/v1/health", { auth: false }),
+};
+
+export const mcpApi = {
+  listExternalDbs: (): Promise<ExternalDBConnectorResponse[]> =>
+    request<ExternalDBConnectorResponse[]>("/api/v1/mcp/external-db"),
+  createExternalDb: (payload: ExternalDBConnectorCreate): Promise<ExternalDBConnectorResponse> =>
+    request<ExternalDBConnectorResponse>("/api/v1/mcp/external-db", { method: "POST", body: payload }),
+  deleteExternalDb: (connectorId: string): Promise<{ deleted: boolean; connector_id: string }> =>
+    request<{ deleted: boolean; connector_id: string }>(`/api/v1/mcp/external-db/${connectorId}`, {
+      method: "DELETE",
+    }),
+  issueDbToken: (payload: ExternalDBTokenRequest): Promise<ExternalDBTokenResponse> =>
+    request<ExternalDBTokenResponse>("/api/v1/mcp/external-db/token", { method: "POST", body: payload }),
+  rpc: <T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}): Promise<McpJsonRpcResponse<T>> =>
+    request<McpJsonRpcResponse<T>>("/api/v1/mcp", {
+      method: "POST",
+      body: { jsonrpc: "2.0", id: Date.now(), method, params },
+    }),
 };

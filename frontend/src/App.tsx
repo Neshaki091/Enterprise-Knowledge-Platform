@@ -8,6 +8,7 @@ import { ChatPage } from "@/pages/ChatPage";
 import { SearchPage } from "@/pages/SearchPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { TeamPage } from "@/pages/TeamPage";
+import { McpConnectorsPage } from "@/pages/McpConnectorsPage";
 import { TenantAdminPage } from "@/pages/TenantAdminPage";
 import { PlatformAdminPage } from "@/pages/PlatformAdminPage";
 import { TenantsPage } from "@/pages/TenantsPage";
@@ -34,6 +35,7 @@ export default function App() {
 
           <Route element={<RequireAdmin />}>
             <Route path="/team" element={<TeamPage />} />
+            <Route path="/mcp-connectors" element={<McpConnectorsPage />} />
             <Route path="/admin/tenant" element={<TenantAdminPage />} />
           </Route>
 

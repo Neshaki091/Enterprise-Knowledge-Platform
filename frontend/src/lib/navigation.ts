@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Building2,
+  Database,
   FileStack,
   LayoutDashboard,
   MessageSquareText,
@@ -38,6 +39,7 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Quản trị doanh nghiệp",
     items: [
       { label: "Phòng ban & Nhân sự", to: "/team", icon: Users, adminOnly: true },
+      { label: "Kết nối MCP & DB riêng", to: "/mcp-connectors", icon: Database, adminOnly: true },
       { label: "Quản trị doanh nghiệp", to: "/admin/tenant", icon: BarChart3, adminOnly: true },
     ],
   },

@@ -16,6 +16,7 @@ from app.core.access import allowed_department_ids
 from app.schemas.search import SearchRequest
 from app.services.search_service import SearchService
 from app.services.document_service import DocumentService
+from app.services.external_db_service import ExternalDBService
 
 
 class MCPServer:
@@ -64,6 +65,33 @@ class MCPServer:
                     }
                 },
                 "required": ["document_id"]
+            }
+        },
+        {
+            "name": "list_enterprise_db_connectors",
+            "description": (
+                "Liệt kê các kết nối cơ sở dữ liệu riêng của doanh nghiệp (chỉ hiển thị tên, loại DB và bảng được phép)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            }
+        },
+        {
+            "name": "query_enterprise_db",
+            "description": (
+                "Truy vấn Read-Only (SELECT) vào cơ sở dữ liệu riêng của doanh nghiệp. "
+                "Bắt buộc có db_jwt và tenant_secret do doanh nghiệp cấp (Zero-Knowledge)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "connector_id": {"type": "string", "description": "UUID của kết nối DB riêng"},
+                    "db_jwt": {"type": "string", "description": "JWT phạm vi Read-Only do Tenant cấp"},
+                    "tenant_secret": {"type": "string", "description": "Khóa bí mật riêng của doanh nghiệp"},
+                    "sql_query": {"type": "string", "description": "Câu lệnh SELECT chỉ đọc"},
+                },
+                "required": ["connector_id", "db_jwt", "tenant_secret", "sql_query"]
             }
         }
     ]
@@ -223,6 +251,57 @@ class MCPServer:
                     ],
                     "isError": False
                 })
+
+            # Thực thi Tool 3: list_enterprise_db_connectors
+            elif tool_name == "list_enterprise_db_connectors":
+                connectors = await ExternalDBService.list_connectors(db, context.tenant_id)
+                items = [
+                    {
+                        "connector_id": str(c.id),
+                        "name": c.name,
+                        "db_type": c.db_type,
+                        "host_masked": c.host_masked,
+                        "allowed_tables": c.allowed_tables,
+                        "is_active": c.is_active,
+                    }
+                    for c in connectors
+                ]
+                return JsonRpcResponse.success(req_id, {
+                    "content": [{"type": "text", "text": json.dumps(items, ensure_ascii=False)}],
+                    "isError": False,
+                })
+
+            # Thực thi Tool 4: query_enterprise_db (Zero-Knowledge + JWT + Read-Only SQL)
+            elif tool_name == "query_enterprise_db":
+                conn_id_str = tool_args.get("connector_id")
+                db_jwt = tool_args.get("db_jwt")
+                tenant_secret = tool_args.get("tenant_secret")
+                sql_query = tool_args.get("sql_query")
+                if not all([conn_id_str, db_jwt, tenant_secret, sql_query]):
+                    return JsonRpcResponse.error(
+                        req_id,
+                        JsonRpcErrorCodes.INVALID_PARAMS,
+                        "Thiếu tham số bắt buộc: connector_id, db_jwt, tenant_secret, sql_query",
+                    )
+                try:
+                    conn_uuid = uuid.UUID(conn_id_str)
+                    result = await ExternalDBService.execute_readonly_query(
+                        db=db,
+                        tenant_id=context.tenant_id,
+                        connector_id=conn_uuid,
+                        db_jwt=db_jwt,
+                        tenant_secret=tenant_secret,
+                        sql_query=sql_query,
+                    )
+                    return JsonRpcResponse.success(req_id, {
+                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}],
+                        "isError": False,
+                    })
+                except Exception as exc:
+                    return JsonRpcResponse.success(req_id, {
+                        "content": [{"type": "text", "text": str(getattr(exc, "detail", exc))}],
+                        "isError": True,
+                    })
 
             else:
                 return JsonRpcResponse.error(

@@ -508,3 +508,105 @@ Các lỗi cấu hình thật đã gặp:
 12. Sau lần deploy này, nên thêm check gì vào CI để không tái diễn lỗi frontend thiếu file?
 
 ---
+
+## PHẦN 6: BỘ 35 CÂU HỎI HIỂU SÂU TOÀN HỆ THỐNG (SYSTEM MASTERY Q&A)
+
+> Bộ câu hỏi dưới đây tổng hợp trực tiếp từ kiến trúc và mã nguồn thực tế hiện tại của toàn dự án (Backend Core, PostgreSQL RLS, Security Hardening, Zero-Knowledge External DB MCP, Hybrid RAG + 16K TPM, Realtime Telemetry và Frontend SPA). Mỗi câu hỏi đều kèm **định hướng trả lời** để App Owner tự kiểm tra mức độ làm chủ hệ thống.
+
+---
+
+### 🔐 Nhóm A: PostgreSQL Row-Level Security (RLS), Kết nối Pool & Schema Dữ liệu
+1. **Tại sao trên PostgreSQL có bật `FORCE ROW LEVEL SECURITY` ở [0007_enable_postgres_rls.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/alembic/versions/0007_enable_postgres_rls.py), nhưng hệ thống vẫn có thể bị rò rỉ dữ liệu nếu backend kết nối bằng user `postgres`?**
+   - *Định hướng:* PostgreSQL luôn cho phép role có thuộc tính `SUPERUSER` hoặc `BYPASSRLS` đi xuyên qua mọi chính sách RLS. Vì vậy `verify_rls_database_role()` trong [database.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/core/database.py) ép fail-closed nếu không chạy bằng role ứng dụng như `saas_app` (`NOSUPERUSER / NOBYPASSRLS`).
+2. **Tại sao cơ chế gắn ngữ cảnh RLS (`_apply_rls_on_transaction_begin`) lại lắng nghe sự kiện `after_begin` của SQLAlchemy Session và dùng `set_config(..., true)` (`is_local = true`)?**
+   - *Định hướng:* Với connection pool (`pool_size=10`), một session có thể commit giữa chừng rồi lấy connection vật lý khác trong pool, và một connection sau khi xong request sẽ được tái sử dụng cho tenant khác. `is_local=true` khiến các biến `app.current_tenant`, `app.current_user`, `app.rls_bypass` tự động xóa ngay khi `COMMIT`/`ROLLBACK`.
+3. **Trong [rls.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/core/rls.py), tuyến nào được bật `rls_bypass = True`? Rủi ro gì xảy ra nếu bật nhầm `rls_bypass` cho một endpoint nghiệp vụ?**
+   - *Định hướng:* Chỉ `/api/v1/auth*`, `/`, `/docs`, `/redoc`, `/openapi.json`, hoặc token có `role == "SUPER_ADMIN"`. Nếu bật nhầm trên endpoint nghiệp vụ, lớp phòng thủ tầng DB bị vô hiệu hóa nếu code Python lỡ thiếu `.where(tenant_id == ...)`.
+4. **Vì sao bộ test `pytest` chạy bằng SQLite vẫn pass dù SQLite hoàn toàn không hỗ trợ `ENABLE ROW LEVEL SECURITY`?**
+   - *Định hướng:* Trong `0007_enable_postgres_rls.py`, migration bỏ qua khi `dialect.name != "postgresql"`. SQLite chỉ kiểm chứng lớp logic ORM & `TenantContext`; hành vi RLS thật bắt buộc kiểm tra trên PostgreSQL 16 với role `saas_app` (đã ghi ở mục 5.1 & 5.8).
+5. **Lỗi `"value out of int32 range"` khi upload tài liệu trên PostgreSQL đến từ đâu và [0008_widen_child_chunk_faiss_id.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/alembic/versions/0008_widen_child_chunk_faiss_id.py) xử lý thế nào?**
+   - *Định hướng:* `DocumentService` sinh `faiss_id` ngẫu nhiên trong `[0, 2^62)` cho FAISS `IndexIDMap2`, vượt quá giới hạn `INTEGER` 32-bit có dấu (`2^31 - 1`) của PostgreSQL (SQLite vốn lưu 64-bit nên không lộ lỗi ở local test). Migration `0008` nâng cột `faiss_id` lên `BIGINT`.
+6. **Vì sao khi dùng Docker Compose với volume PostgreSQL đã tồn tại sẵn dữ liệu từ trước, script `init_db_app_role.sh` không tự tạo role `saas_app`?**
+   - *Định hướng:* Entrypoint `/docker-entrypoint-initdb.d/` của official `postgres` image chỉ chạy một lần duy nhất khi thư mục `/var/lib/postgresql/data` còn trống.
+
+---
+
+### 🛡️ Nhóm B: Bảo mật Đa Khách thuê, Auth & Chống Lạm dụng (Security Hardening)
+7. **Ngoài kiểm tra `jti` từng token, vì sao [context.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/core/context.py) còn kiểm tra cả `sid` (session/token family) trong bảng `RevokedToken`?**
+   - *Định hướng:* Khi phát hiện Refresh Token bị dùng lại (Token Reuse Detection trong `C08`), việc thu hồi cả `sid` lập tức vô hiệu hóa **cả Refresh Token lẫn Access Token đang còn hạn** thuộc phiên đăng nhập đó, không phải chờ Access Token hết 15 phút.
+8. **Nếu một kẻ tấn công xoay vòng 20 địa chỉ IP khác nhau để dò mật khẩu 1 tài khoản, `LoginAttemptGuard` trong [login_guard.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/core/login_guard.py) chặn bằng cách nào mà không dùng Redis?**
+   - *Định hướng:* `LoginAttemptGuard` theo dõi đồng thời 3 cửa sổ trượt 5 phút: tối đa **5** lần sai theo `(email + IP)`, **10** lần sai theo `email` trên mọi IP (chống brute-force phân tán), và **30** lần sai theo `IP`; giới hạn cứng `MAX_TRACKED_KEYS = 5000` để bảo vệ RAM 1.0 GB.
+9. **Sự khác biệt về bảo mật và UX giữa việc truyền header `X-Tenant-ID` mỗi request và gọi `POST /api/v1/auth/switch-tenant` là gì?**
+   - *Định hướng:* Cả hai đều kiểm tra lại bảng `Membership` và `Tenant.is_active` trong CSDL (Fail-Closed). `switch-tenant` cấp cặp token mới gắn sẵn `tenant_id` mục tiêu vào JWT claims, còn `X-Tenant-ID` cho phép đổi ngữ cảnh tức thì nhưng ưu tiên đối soát membership của `target_tenant_uuid` trước mọi truy vấn.
+10. **Cơ chế Department ACL bảo vệ tài liệu nội bộ phòng ban ra sao trong 4 thao tác: `upload`, `list`, `get_document`, và `hybrid_search`?**
+    - *Định hướng:* Nhân viên thường (`EMPLOYEE`) chỉ đọc/tìm được tài liệu thuộc đúng `department_id` của mình **hoặc** tài liệu chung toàn công ty (`department_id IS NULL`); bị chặn `403` khi upload vào phòng ban khác và trả `404` khi cố đọc tài liệu phòng ban khác (`D08`–`D10` và [test_security_hardening.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/tests/test_security_hardening.py)).
+11. **Vì sao hệ thống kiểm tra `MAX_UPLOAD_SIZE_BYTES` trả `HTTP 413` trước khi parse file PDF/DOCX/XLSX, và kiểm tra Magic Bytes (`%PDF-`) trong [parsers.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/parsers.py)?**
+    - *Định hướng:* Tránh kẻ xấu upload file rác/zip-bomb dung lượng lớn làm tràn RAM 1.0 GB khi bóc tách bằng `pypdf`/`python-docx` (Zero Raw Storage + Fail-Fast).
+12. **Hạn mức `quota_limits` (`max_users`, `max_documents`) lưu dạng JSON trên `Tenant` mang lại lợi ích gì, và những endpoint nào mới được phép chỉnh sửa trường này?**
+    - *Định hướng:* Linh hoạt thêm tier/giới hạn mới mà không phải migrate schema bảng `tenants`. Chỉ Platform Super-Admin (`require_superuser`) mới được gọi `PATCH /api/v1/tenants/{id}` hoặc `suspend`/`activate`; Tenant Admin tự nâng hạn mức sẽ bị chặn `403` (`C11`).
+13. **`Settings.validate_runtime_security()` trong [config.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/core/config.py) kiểm tra những điều kiện Fail-Closed nào khi `ENVIRONMENT=production`?**
+    - *Định hướng:* Chặn khởi động (`RuntimeError`) nếu `DEBUG=True`, `SECRET_KEY` < 32 ký tự hoặc chứa chuỗi mẫu (`default_`, `change_me`...), `CORS_ALLOW_ORIGINS` chứa `*`, hoặc `DB_RLS_ENABLED=False`.
+
+---
+
+### 🔌 Nhóm C: Custom MCP Server & Kết nối DB Riêng Zero-Knowledge
+14. **Custom MCP Server trong [server.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/mcp/server.py) hiện có mấy nhóm Tools và khác nhau thế nào về nguồn dữ liệu?**
+    - *Định hướng:* 4 tools chia 2 nhóm: (1) Kho tri thức nền tảng (`search_knowledge_base`, `get_document_context`) đọc PostgreSQL + FAISS của SaaS; (2) Kết nối DB riêng doanh nghiệp (`list_enterprise_db_connectors`, `query_enterprise_db`) truy vấn trực tiếp vào DB ngoài do khách hàng đăng ký.
+15. **Kiến trúc Zero-Knowledge trong [external_db_service.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/external_db_service.py) bảo đảm "kể cả chủ nền tảng cũng không đọc được DB doanh nghiệp" bằng cơ chế mật mã nào?**
+    - *Định hướng:* Chuỗi kết nối (`connection_uri`) được mã hóa **AES-256-GCM** bằng khóa dẫn xuất từ `PBKDF2-HMAC-SHA256(tenant_id, tenant_secret, salt)`. `tenant_secret` **không bao giờ lưu trong DB hay `.env` server**, nên dù Platform Owner có toàn bộ DB dump lẫn `SECRET_KEY` cũng không thể giải mã `encrypted_dsn`.
+16. **Tại sao `db_jwt` của tính năng External DB lại KHÔNG ký bằng `settings.SECRET_KEY` chung của hệ thống?**
+    - *Định hướng:* Vì Platform Owner biết `SECRET_KEY`. `issue_db_jwt()` ký bằng `sha256("mcp-ext-db:{tenant_id}:{tenant_secret}")`, nên ngay cả Platform Super-Admin cũng không thể tự tạo `db_jwt` giả mạo cho Tenant nếu không có `tenant_secret` của khách hàng.
+17. **`ExternalDBService.validate_readonly_sql()` áp dụng những lớp phòng thủ nào để chặn SQL Injection / phá hoại dữ liệu?**
+    - *Định hướng:* Bắt đầu bằng `SELECT`, cấm dấu `;` đa câu lệnh, cấm comment `--` / `/*`, cấm mọi từ khóa ghi/DDL (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `PRAGMA`, `ATTACH`, `COPY`...), trích xuất tên bảng sau `FROM`/`JOIN` đối chiếu `allowed_tables`, và tự ép `LIMIT 50`.
+18. **Tại sao `execute_readonly_query()` tạo `create_async_engine(dsn)` rồi `dispose()` ngay sau mỗi truy vấn thay vì giữ connection pool lâu dài tới DB của từng khách hàng?**
+    - *Định hướng:* Để giữ DSN giải mã chỉ tồn tại chớp nhoáng trong RAM cho 1 query duy nhất (Zero Persistence of plaintext DSN) và tránh rò rỉ file descriptor / RAM trên VPS 1.0 GB nếu hàng chục tenant đăng ký DB ngoài.
+19. **Trade-off lớn nhất của mô hình Zero-Knowledge với `tenant_secret` là gì khi doanh nghiệp làm mất mật khẩu `tenant_secret`?**
+    - *Định hướng:* Không có cơ chế "Quên mật khẩu" để giải mã lại `encrypted_dsn` cũ (vì server không giữ bản sao `tenant_secret`). Doanh nghiệp phải xóa connector cũ (`DELETE /api/v1/mcp/external-db/{id}`) và đăng ký lại với `tenant_secret` mới.
+
+---
+
+### 🧠 Nhóm D: RAG Pipeline, Semantic Chunking, Hybrid Search & Trần 16K TPM Gemma 4 26B
+20. **Vì sao việc ghép nhiều phân mục `# Heading` liên tiếp vào chung 1 `Parent Chunk` (~1000 tokens) từng gây ra Bug 13 làm Gemma trả lời nhầm `"không tìm thấy thông tin"`?**
+    - *Định hướng:* Khi 3–4 phân mục bị gộp chung và `current_heading` bị ghi đè bởi tiêu đề sau cùng, vector child chunk ở đoạn cuối bị pha loãng bởi `parent_summary` của đoạn đầu. Sửa bằng ngưỡng tách heading `>= 200` tokens trong [chunking_service.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/chunking_service.py).
+21. **Tại sao ở nhánh Sparse Search SQLite trong [search_service.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/search_service.py), dùng `.limit(request.top_k * 2)` ngay trong SQL lại làm rơi mất kết quả đúng?**
+    - *Định hướng:* SQLite `ILIKE` không có hàm xếp hạng tự nhiên trước `ORDER BY`, nên `.limit(6)` cắt ngẫu nhiên 6 dòng đầu bảng chứa từ dừng (`"và"`, `"về"`) trước khi Python kịp chấm điểm tần suất khớp từ khóa. Phải lọc stopword, lấy pool đủ rộng (`max(200, top_k * 10)`), chấm điểm rồi mới cắt.
+22. **Tại sao `DocumentService` nhúng chuỗi kết hợp `[Tài liệu | Phân mục | Ngữ cảnh cha] + Child Content`, và đặt `task_type` khác nhau giữa lúc Upload (`RETRIEVAL_DOCUMENT`) và Search (`RETRIEVAL_QUERY`)?**
+    - *Định hướng:* Model `gemini-embedding-001` (`786` chiều, batch tối đa `10` chunks) tối ưu hóa không gian biểu diễn bất đối xứng giữa câu hỏi ngắn (`RETRIEVAL_QUERY`) và đoạn tài liệu dài (`RETRIEVAL_DOCUMENT`); nhúng thêm heading + ngữ cảnh cha giúp child chunk không bị mất chủ ngữ khi đứng tách rời.
+23. **Gemma 4 26B (`gemma-4-26b-a4b-it`) trả về mảng `parts` có chứa `{thought: True}` nghĩa là gì, và [llm_service.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/llm_service.py) xử lý thế nào?**
+    - *Định hướng:* Đây là phần suy luận nội bộ (internal reasoning/thinking tokens) của mô hình Gemma 4. `_extract_google_answer()` lọc bỏ các part có `thought=True` để không làm nhiễu câu trả lời cuối và không phá format trích dẫn `[Nguồn: ...]`.
+24. **Khi endpoint `:streamGenerateContent?alt=sse` của Google trả HTTP `503 Service Unavailable`, luồng `mode="hybrid"` trong `LLMService.stream_answer()` phản ứng theo các nấc nào?**
+    - *Định hướng:* Retry Exponential Backoff 4 lần trên stream endpoint $\rightarrow$ nếu vẫn lỗi, fallback gọi `:generateContent` non-streaming (4 lần) $\rightarrow$ nếu toàn bộ Cloud LLM đều 502/503/504, chế độ `hybrid` fallback an toàn sang `_generate_mock_response` từ context đã lọc, còn `retrieved_chunks` và `citations` thì đã phát tới client từ trước đó rồi.
+25. **Cơ chế Context Filtering 3 tầng trong [context_filter.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/context_filter.py) kết hợp với `QuotaManager.reconcile_tokens()` bảo vệ trần `16K TPM` ra sao?**
+    - *Định hướng:* Tầng 1 cắt theo ngưỡng RRF tương đối (`0.55 * top_score`, tối đa `3` chunks); Tầng 2 tách chuẩn cả câu lẫn dòng `\n+` và khử trùng lặp; Tầng 3 bỏ ngoại lệ `<= 3` câu, chống nhiễu 1 âm tiết với query `>= 3` từ, ép trần `550` context tokens. Trước search đặt cọc trần dự kiến, sau nén gọi `reconcile_tokens()` hoàn trả phần token dư về lại bucket `16.000 TPM`.
+
+---
+
+### 📊 Nhóm E: Realtime Admin Analytics, Storage DB/FAISS & Audit Logs (SEC-026)
+26. **Tại sao [telemetry_service.py](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/backend/app/services/telemetry_service.py) vừa dùng `deque(maxlen=250)` trong RAM vừa ghi bảng PostgreSQL `telemetry_logs`?**
+    - *Định hướng:* Ring buffer trong RAM giúp SSE `/realtime` và tính chỉ số QPS 1 phút / 5 phút, P95 latency đạt độ trễ `< 1ms` mà chỉ tốn `< 100 KB` RAM; còn bảng `telemetry_logs` lưu vết dài hạn và giữ được sự kiện `429`/`503` (ghi với `persist=False` vào ring buffer để không bị mất khi `get_db()` rollback do `HTTPException`).
+27. **Tại sao không dùng chung `func.length(raw_text)` để đo `db_raw_text_bytes` trên cả PostgreSQL và SQLite?**
+    - *Định hướng:* Với văn bản tiếng Việt có dấu UTF-8, `LENGTH()` trên SQLite đếm số ký tự Unicode (ví dụ 123 ký tự thay vì 144 bytes). `_byte_length_expr()` dùng `func.octet_length()` trên PostgreSQL và `func.length(cast(col, LargeBinary))` trên SQLite để đo chính xác số byte UTF-8.
+28. **`FaissService.get_index_stats_sync()` làm thế nào đếm tổng số vector đang có trong file `{tenant_id}.index` mà không làm tăng vọt Heap RAM?**
+    - *Định hướng:* Mở index bằng cờ `faiss.IO_FLAG_MMAP` để đọc header `index.ntotal` và `index.d` trực tiếp từ OS Page Cache kết hợp `os.path.getsize(path)`, không copy ma trận vector vào RAM Python.
+29. **Nguyên tắc SEC-026 được thực thi thế nào trong bảng `telemetry_logs`, endpoint `/dashboards/platform/analytics` và `/dashboards/platform/logs`?**
+    - *Định hướng:* `TelemetryLog` chỉ lưu metadata kỹ thuật (`event_type`, `latency_ms`, số token, `storage_delta_bytes`, `status_code`), tuyệt đối **không** lưu tên file, `raw_text`, câu hỏi hay câu trả lời. `model_api_limits` che API key qua `mask_api_key()` (`AIza...xxxx`).
+30. **Làm sao `SSE` stream của `/chat/stream` và `/dashboards/*/realtime` trả `429 Retry-After` sạch sẽ trước khi mở kết nối `text/event-stream`?**
+    - *Định hướng:* Endpoint kiểm tra quyền & `quota_manager.acquire()` / precheck trước hoặc ngay ở bước đầu; nếu cạn hạn mức trên `/chat/stream` khi chưa kịp gửi HTTP 200 stream thì ném `HTTP 429` kèm header `Retry-After` chuẩn REST (kiểm chứng ở `G07`).
+
+---
+
+### 🖥️ Nhóm F: Frontend Architecture (React + Vite) & Vận hành Production
+31. **Trong [api-client.ts](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/frontend/src/lib/api-client.ts), cơ chế "Single-Flight Refresh Queue" (`refreshPromise`) giải quyết lỗi nghiêm trọng gì khi Access Token hết hạn?**
+    - *Định hướng:* Khi dashboard mở 3–4 API cùng lúc và cả 4 đều trả `401`, nếu cả 4 đều gọi `/auth/refresh` với cùng một `refresh_token`, request thứ 2 sẽ bị backend coi là **Token Reuse Attack** và thu hồi toàn bộ phiên đăng nhập! `refreshPromise` khóa lại để chỉ gọi `/auth/refresh` đúng 1 lần rồi replay tất cả request đang chờ.
+32. **Tại sao Frontend không dùng `window.EventSource` mặc định của trình duyệt cho [ChatPage.tsx](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/frontend/src/pages/ChatPage.tsx) (`POST /api/v1/chat/stream`) và `use-realtime-snapshot.ts`?**
+    - *Định hướng:* `EventSource` chuẩn trình duyệt chỉ hỗ trợ HTTP `GET` và **không thể đính kèm header `Authorization: Bearer` hay `X-Tenant-ID`** (cũng không truyền body JSON cho `POST`). Dùng `fetch()` + `response.body.getReader()` giải mã chunk SSE khắc phục triệt để cả hai giới hạn này.
+33. **Tại sao Frontend cần component `MarkdownContent` riêng thay vì `dangerouslySetInnerHTML` khi render câu trả lời từ Gemma 4 26B?**
+    - *Định hướng:* Dữ liệu đầu vào từ tài liệu doanh nghiệp hoặc đầu ra LLM có thể chứa mã HTML/JS độc hại (Prompt Injection $\rightarrow$ Stored/Reflected XSS). Render qua parser an toàn giúp tránh thực thi script trên trình duyệt người dùng.
+34. **Vì sao trong kiến trúc deploy production ([docker-compose.prod.yml](file:///f:/IT%20project/Enterprise/SaaS_Chatbot_platform/docker-compose.prod.yml)), ta giữ Nginx + FastAPI + PostgreSQL trên GCP `e2-micro` nhưng có thể tách Frontend tĩnh lên Vercel?**
+    - *Định hướng:* Vercel CDN phục vụ file tĩnh `dist/` toàn cầu miễn phí với 0 MB RAM trên VPS, giảm tải cho `e2-micro` (chỉ có 1.0 GB RAM dành cho PostgreSQL 300M + Backend 350M + Nginx 50M), nhưng đòi hỏi đồng bộ chặt 3 tầng: `VITE_API_BASE_URL` lúc build, `CORS_ALLOW_ORIGINS` ở backend và `connect-src` trong `frontend/vercel.json`.
+35. **Nếu hệ thống tăng trưởng từ 10 lên 200 doanh nghiệp cùng sử dụng trên GCP `e2-micro`, nút thắt cổ chai (bottleneck) đầu tiên sẽ xuất hiện ở đâu và lộ trình nâng cấp là gì?**
+    - *Định hướng:* Nút thắt #1 là **hạn mức 30 RPM / 16K TPM** của Google API key miễn phí (cần nâng tier API hoặc multi-key/caching câu hỏi lặp); nút thắt #2 là **1.0 GB RAM / 1 worker** khi nhiều user upload đồng thời các file lớn hoặc số lượng file `.index` mở mmap tăng cao (cần tách background worker `SKIP LOCKED` và nâng RAM VPS).
+
+---
+
+*(Hoàn tất bổ sung 35 câu hỏi hệ thống từ mã nguồn thực tế — cập nhật 2026-11-26)*

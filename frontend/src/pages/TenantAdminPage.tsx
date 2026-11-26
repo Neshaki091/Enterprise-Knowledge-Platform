@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  Database,
   FileStack,
   FolderTree,
   Pause,
@@ -23,7 +25,7 @@ import { useRealtimeSnapshot, type LiveStatus } from "@/features/dashboard/use-r
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/layout/stat-card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -136,6 +138,9 @@ export function TenantAdminPage() {
             <Button variant="outline" size="sm" onClick={() => live.setEnabled(!live.enabled)}>
               {live.enabled ? <Pause /> : <Play />} {live.enabled ? "Tạm dừng live" : "Bật live"}
             </Button>
+            <Link to="/mcp-connectors" className={buttonVariants({ variant: "outline", size: "sm" })}>
+              <Database /> Kết nối MCP & DB riêng
+            </Link>
             <Button variant="outline" size="sm" onClick={refreshAll} disabled={refreshing}>
               <RefreshCw className={refreshing ? "animate-spin" : undefined} /> Làm mới
             </Button>

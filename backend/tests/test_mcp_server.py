@@ -148,3 +148,115 @@ async def test_mcp_invalid_method_error(client: AsyncClient):
     err = res.json()["error"]
     assert err["code"] == -32601
     assert "không được hỗ trợ" in err["message"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_external_db_zero_knowledge_and_jwt_isolation(client: AsyncClient, tmp_path):
+    """
+    Kiểm định MCP cho DB riêng của doanh nghiệp theo chuẩn Zero-Knowledge + DB JWT:
+    - DSN được mã hóa AES-256-GCM bằng tenant_secret (không lưu secret trên server).
+    - Sai tenant_secret bị chặn 403 -> kể cả chủ nền tảng cũng không thể giải mã hay xin DB JWT.
+    - Đúng db_jwt + tenant_secret cho phép chạy SELECT Read-Only trên bảng allowed_tables.
+    - Chặn DROP/DELETE và chặn truy vấn bảng ngoài allowed_tables.
+    """
+    import json
+    import sqlite3
+
+    ext_db_file = tmp_path / "enterprise_erp.db"
+    conn = sqlite3.connect(str(ext_db_file))
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, item TEXT, total INTEGER)")
+    conn.execute("CREATE TABLE payroll (id INTEGER PRIMARY KEY, salary INTEGER)")
+    conn.execute("INSERT INTO orders (id, item, total) VALUES (1, 'Laptop', 25000000)")
+    conn.execute("INSERT INTO payroll (id, salary) VALUES (1, 99999999)")
+    conn.commit()
+    conn.close()
+
+    token = await register_and_get_token(client, "extdb@corp.com", "ExtDB Corp", "extdb-corp")
+    headers = {"Authorization": f"Bearer {token}"}
+    tenant_secret = "Enterprise_Only_Secret_2026!"
+    ext_dsn = f"sqlite+aiosqlite:///{ext_db_file.as_posix()}"
+
+    # 1. Đăng ký kết nối DB riêng (chỉ cho phép đọc bảng 'orders')
+    reg_res = await client.post(
+        "/api/v1/mcp/external-db",
+        json={
+            "name": "ERP Orders DB",
+            "db_type": "sqlite",
+            "connection_uri": ext_dsn,
+            "tenant_secret": tenant_secret,
+            "allowed_tables": ["orders"],
+        },
+        headers=headers,
+    )
+    assert reg_res.status_code == 201
+    reg_data = reg_res.json()
+    connector_id = reg_data["id"]
+    assert reg_data["host_masked"] == "sqlite:///***"
+    assert ext_dsn not in reg_res.text
+    assert tenant_secret not in reg_res.text
+
+    # 2. Sai tenant_secret -> 403 Forbidden (Zero-Knowledge)
+    bad_tok = await client.post(
+        "/api/v1/mcp/external-db/token",
+        json={"connector_id": connector_id, "tenant_secret": "WrongSecretKey123"},
+        headers=headers,
+    )
+    assert bad_tok.status_code == 403
+
+    # 3. Đúng tenant_secret -> cấp phát DB JWT Read-Only
+    tok_res = await client.post(
+        "/api/v1/mcp/external-db/token",
+        json={"connector_id": connector_id, "tenant_secret": tenant_secret, "expires_minutes": 30},
+        headers=headers,
+    )
+    assert tok_res.status_code == 200
+    db_jwt = tok_res.json()["db_jwt"]
+
+    # 4. Gọi MCP tool 'query_enterprise_db' với SELECT hợp lệ
+    q_ok = await client.post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "tools/call",
+            "params": {
+                "name": "query_enterprise_db",
+                "arguments": {
+                    "connector_id": connector_id,
+                    "db_jwt": db_jwt,
+                    "tenant_secret": tenant_secret,
+                    "sql_query": "SELECT id, item, total FROM orders",
+                },
+            },
+        },
+        headers=headers,
+    )
+    assert q_ok.status_code == 200
+    res_ok = q_ok.json()["result"]
+    assert res_ok["isError"] is False
+    parsed = json.loads(res_ok["content"][0]["text"])
+    assert parsed["row_count"] == 1
+    assert parsed["rows"][0]["item"] == "Laptop"
+
+    # 5. Chặn truy vấn bảng ngoài allowed_tables ('payroll') & chặn DROP TABLE
+    for bad_sql in ["SELECT * FROM payroll", "DROP TABLE orders"]:
+        q_bad = await client.post(
+            "/api/v1/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 202,
+                "method": "tools/call",
+                "params": {
+                    "name": "query_enterprise_db",
+                    "arguments": {
+                        "connector_id": connector_id,
+                        "db_jwt": db_jwt,
+                        "tenant_secret": tenant_secret,
+                        "sql_query": bad_sql,
+                    },
+                },
+            },
+            headers=headers,
+        )
+        assert q_bad.status_code == 200
+        assert q_bad.json()["result"]["isError"] is True

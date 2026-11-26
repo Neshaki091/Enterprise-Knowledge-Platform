@@ -8,6 +8,7 @@ from app.models.document import Document
 from app.models.chunk import DocumentParentChunk, DocumentChildChunk
 from app.models.feedback import ChatFeedback
 from app.models.telemetry import TelemetryLog
+from app.models.external_db import ExternalDBConnector
 
 __all__ = [
     "Base",
@@ -23,4 +24,5 @@ __all__ = [
     "DocumentChildChunk",
     "ChatFeedback",
     "TelemetryLog",
+    "ExternalDBConnector",
 ]

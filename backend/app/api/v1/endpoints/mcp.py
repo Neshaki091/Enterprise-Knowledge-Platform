@@ -4,7 +4,8 @@ Router Endpoints cung cấp cổng giao tiếp HTTP và SSE cho Model Context Pr
 Cho phép các Agent đám mây hoặc công cụ AI tương tác qua JSON-RPC 2.0 (ADR-007).
 """
 
-from typing import Dict, Any, Optional
+import uuid
+from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Depends, Request, status, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,13 @@ from app.core.database import get_db
 from app.core.context import get_current_tenant_context, TenantContext
 from app.mcp.server import MCPServer
 from app.mcp.protocol import JsonRpcResponse, JsonRpcErrorCodes
+from app.schemas.external_db import (
+    ExternalDBConnectorCreate,
+    ExternalDBConnectorResponse,
+    ExternalDBTokenRequest,
+    ExternalDBTokenResponse,
+)
+from app.services.external_db_service import ExternalDBService
 
 router = APIRouter()
 
@@ -80,3 +88,81 @@ async def mcp_sse_transport(request: Request):
     async def sse_stream():
         yield "event: endpoint\ndata: /api/v1/mcp\n\n"
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+def _require_tenant_admin_only(context: TenantContext) -> None:
+    """Chỉ cho phép Admin/Owner nội bộ của Tenant; chặn cả Platform Super-Admin xem/cấu hình DB riêng."""
+    if not context.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chỉ Quản trị viên Doanh nghiệp (Tenant Admin/Owner) mới được quản lý kết nối DB riêng.",
+        )
+
+
+@router.post(
+    "/external-db",
+    response_model=ExternalDBConnectorResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Đăng ký kết nối DB riêng của doanh nghiệp (mã hóa AES-256-GCM bằng tenant_secret)"
+)
+async def register_external_db(
+    data: ExternalDBConnectorCreate,
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_tenant_admin_only(context)
+    return await ExternalDBService.create_connector(db, context.tenant_id, context.user_id, data)
+
+
+@router.get(
+    "/external-db",
+    response_model=List[ExternalDBConnectorResponse],
+    summary="Liệt kê các kết nối DB riêng của doanh nghiệp (ẩn DSN)"
+)
+async def list_external_dbs(
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_tenant_admin_only(context)
+    return await ExternalDBService.list_connectors(db, context.tenant_id)
+
+
+@router.delete(
+    "/external-db/{connector_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Xóa kết nối DB riêng của doanh nghiệp"
+)
+async def delete_external_db(
+    connector_id: uuid.UUID,
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_tenant_admin_only(context)
+    await ExternalDBService.delete_connector(db, context.tenant_id, connector_id)
+    return {"deleted": True, "connector_id": str(connector_id)}
+
+
+@router.post(
+    "/external-db/token",
+    response_model=ExternalDBTokenResponse,
+    summary="Cấp JWT giới hạn quyền Read-Only để AI Agent truy vấn DB riêng qua MCP"
+)
+async def issue_external_db_token(
+    data: ExternalDBTokenRequest,
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_tenant_admin_only(context)
+    token, connector = await ExternalDBService.issue_db_jwt(
+        db=db,
+        tenant_id=context.tenant_id,
+        connector_id=data.connector_id,
+        tenant_secret=data.tenant_secret,
+        expires_minutes=data.expires_minutes,
+    )
+    return ExternalDBTokenResponse(
+        db_jwt=token,
+        connector_id=connector.id,
+        allowed_tables=connector.allowed_tables,
+        expires_in_seconds=data.expires_minutes * 60,
+    )
