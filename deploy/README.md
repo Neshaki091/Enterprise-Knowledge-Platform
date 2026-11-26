@@ -89,14 +89,24 @@ Gắn network tag `http-server` cho VM. **Không** mở 5432/8000.
 
 **Phương án registry (khuyến nghị, VPS không build):**
 
+Cách gọn nhất — một lệnh cho pull, deploy, CORS và TLS:
+
+```bash
+sudo bash deploy/registry/bootstrap_vps.sh \
+  --domain <ten>.duckdns.org \
+  --email <email> \
+  --vercel-origin https://<project>.vercel.app
+```
+
+Hoặc chạy từng bước:
+
 ```bash
 # .env phải có DOCKER_IMAGE_PREFIX và IMAGE_TAG (xem registry/README.md)
 docker compose --env-file .env -f docker-compose.registry.yml pull
 docker compose --env-file .env -f docker-compose.registry.yml up -d --remove-orphans
 curl -fsS http://127.0.0.1/health
+# hoặc: sudo bash deploy/registry/deploy_vps.sh
 ```
-
-Hoặc dùng script: `sudo bash deploy/registry/deploy_vps.sh`.
 
 **Phương án build trực tiếp trên VM (fallback):**
 

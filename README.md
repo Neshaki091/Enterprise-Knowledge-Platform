@@ -154,6 +154,15 @@ Runbook một lần cho kiến trúc $0: xem [`deploy/README.md`](deploy/README.
 
 **Cách khuyến nghị — VPS không build:** build image backend + nginx trên máy local, push lên Docker Hub hoặc GHCR, VPS chỉ `docker compose pull` và chạy `docker-compose.registry.yml`. Quy trình đầy đủ, gồm dọn sạch Docker cũ trên VPS, nằm tại [`deploy/registry/README.md`](deploy/registry/README.md).
 
+Sau khi có `.env`, một lệnh duy nhất trên VPS:
+
+```bash
+sudo bash deploy/registry/bootstrap_vps.sh \
+  --domain <ten>.duckdns.org \
+  --email <email> \
+  --vercel-origin https://<project>.vercel.app
+```
+
 Tóm tắt: GCP e2-micro (Ubuntu 22.04) + swap 4 GB → Docker Compose (image từ registry hoặc build tại chỗ) → Nginx TLS 443 + Let's Encrypt (HTTP-01 webroot, tự gia hạn) → DuckDNS tự cập nhật IP → Vercel Hobby chạy SPA tĩnh và trỏ `VITE_API_BASE_URL` về backend HTTPS. Ràng buộc thật sự là **egress 1 GB/tháng** của GCP Always Free.
 
 Các biến bắt buộc phải đổi trước khi lên production: `SECRET_KEY`, `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `CORS_ALLOW_ORIGINS` (đúng một origin Vercel, không wildcard). Backend **fail-closed**: từ chối khởi động nếu cấu hình chưa đạt.

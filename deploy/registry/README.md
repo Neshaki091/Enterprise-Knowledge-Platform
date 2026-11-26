@@ -158,6 +158,30 @@ sudo docker login
 
 ## 4. Trên VPS: pull và chạy
 
+### One-shot (khuyến nghị)
+
+Sau khi đã có `.env`, một lệnh duy nhất làm toàn bộ chuỗi pull → chạy → health →
+CORS → TLS (và tự cài DuckDNS nếu chưa có):
+
+```bash
+sudo bash deploy/registry/bootstrap_vps.sh \
+  --domain ekp-demo.duckdns.org \
+  --email ban@example.com \
+  --vercel-origin https://enterprise-knowledge-platform-xxxx.vercel.app
+```
+
+Script idempotent, không xóa volume; chạy lại để cập nhật TLS/CORS. Các cờ hữu ích:
+
+- `--skip-duckdns`: bỏ qua bước DuckDNS (dùng domain riêng hoặc DNS khác).
+- `--skip-firewall`: không chạy UFW.
+- `--skip-tls`: chỉ deploy HTTP.
+- `--no-pull`: dùng image đang có.
+- Bỏ `--vercel-origin` nếu chưa biết URL Vercel; script sẽ cảnh báo và giữ CORS hiện tại.
+
+Nếu DNS chưa trỏ đúng IP, script vẫn deploy backend nhưng bỏ qua TLS và in hướng dẫn chạy lại.
+
+### Chạy từng bước (thủ công)
+
 ```bash
 sudo bash deploy/registry/deploy_vps.sh
 ```
