@@ -215,6 +215,17 @@ jobs:
           sudo -n true || { echo "sudo cần mật khẩu trên VPS; cấu hình NOPASSWD cho deploy" >&2; exit 1; }
           git pull --ff-only
           test -f .env || { echo "Thiếu .env trên VPS" >&2; exit 1; }
+          OLD_TAG="$(sudo grep -E '^IMAGE_TAG=' .env 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs || true)"
+          on_exit() {
+              rc=$?
+              trap - EXIT
+              if [ "$rc" -ne 0 ] && [ -n "$OLD_TAG" ]; then
+                  sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${OLD_TAG}/" .env || true
+                  echo "Deploy lỗi: đã khôi phục IMAGE_TAG=${OLD_TAG} trong .env" >&2
+              fi
+              exit "$rc"
+          }
+          trap on_exit EXIT
           if sudo grep -q '^IMAGE_TAG=' .env; then
               sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${IMAGE_TAG}/" .env
           else

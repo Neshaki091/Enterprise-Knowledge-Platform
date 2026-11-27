@@ -311,7 +311,8 @@ git push origin v2.3.3
 
 Theo dõi ở tab Actions → "Release & Deploy". Publish xong, job deploy dừng chờ
 duyệt; approve thì VPS được cập nhật. Health fail → `deploy_vps.sh` tự rollback,
-job đỏ, VPS giữ bản cũ. Tag phải trỏ tới commit đã chứa workflow này.
+job đỏ, VPS giữ bản cũ; workflow cũng khôi phục `IMAGE_TAG` cũ trong `.env` để
+thao tác compose thủ công không kéo lại image lỗi. Tag phải trỏ tới commit đã chứa workflow này.
 
 Rollback: không đẩy lại tag cũ (sẽ rebuild/ghi đè image tag đó). Dùng tag
 `previous` trên VPS:
