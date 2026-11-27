@@ -243,20 +243,24 @@ Rollback image **không** rollback migration CSDL — migration phải tương t
 
 ---
 
-## 5b. CI/CD hiện tại: build local → Docker Hub → deploy
+## 5b. CI/CD hiện tại: build + deploy (local hoặc GitHub)
 
-Đường deploy không cần GitHub Actions/secrets/environment; bước build có thể chạy
-local hoặc trên GitHub runner (`build.yml`, tuỳ chọn, cần Docker Hub token). VPS
-vẫn chỉ pull image, không build.
+Có hai đường, dùng chung `deploy_vps.sh` và cùng image trên Docker Hub:
 
-Luồng:
+- **Local**: `bash CI-CD/07_deploy_now.sh --build` build/push rồi SSH deploy.
+- **GitHub**: workflow `.github/workflows/build.yml` build/push và (tuỳ chọn)
+  SSH deploy; local không cần Docker/SSH. Cần secrets `DOCKERHUB_TOKEN` + `VPS_*`
+  như hướng dẫn trong [CI-CD/README.md](../../CI-CD/README.md) mục 6b.
 
-1. Máy local: `bash CI-CD/07_deploy_now.sh --build` build/push
-   `ekp-backend` + `ekp-nginx` với tag `APP_VERSION`.
+VPS luôn chỉ pull image, không build.
+
+Luồng chung:
+
+1. Build/push `ekp-backend` + `ekp-nginx` với tag `APP_VERSION`.
 2. SSH vào VPS: `sudo -n` → `git pull --ff-only` → kiểm tra prefix registry →
    cập nhật `IMAGE_TAG` trong `.env` (chmod 600).
 3. `deploy_vps.sh`: pull, recreate, health gate, tự rollback nếu lỗi, prune an toàn.
-4. Nếu deploy lỗi, `07` khôi phục `IMAGE_TAG` cũ trong `.env`.
+4. Nếu deploy lỗi, script khôi phục `IMAGE_TAG` cũ trong `.env`.
 5. `bash CI-CD/05_verify.sh` kiểm tra public health + trạng thái stack.
 
 ### Thiết lập một lần
@@ -268,18 +272,16 @@ bash CI-CD/01_setup_ssh.sh
 # Preflight VPS: repo sạch, git pull, .env, compose, sudo
 bash CI-CD/00_check_vps.sh
 
-# Đăng nhập Docker Hub để build/push
+# Đăng nhập Docker Hub để build/push từ local
 docker login -u <DOCKERHUB_USERNAME>
 ```
 
-Cấu hình nằm trong `CI-CD/config.sh` (gitignore). Chi tiết: [CI-CD/README.md](../../CI-CD/README.md).
-
-Nếu muốn build trên GitHub thay vì máy local: tạo secret `DOCKERHUB_TOKEN` (Read &
-Write) trong repo, chạy workflow **Build & Push Images**, rồi deploy bằng
-`bash CI-CD/07_deploy_now.sh <tag>` (không cần `--build`). Workflow từ chối tag
-`latest`, tag không khớp `APP_VERSION`, hoặc tag đã tồn tại trên Docker Hub.
+Cấu hình nằm trong `CI-CD/config.sh` (gitignore). Nếu deploy từ GitHub, tạo thêm
+các secret VPS và key riêng theo mục 6b của CI-CD/README.
 
 ### Phát hành
+
+**Cách local:**
 
 ```bash
 # Bump APP_VERSION trong backend/app/core/version.py (nguồn duy nhất)
@@ -291,6 +293,10 @@ bash CI-CD/07_deploy_now.sh --dry-run
 bash CI-CD/07_deploy_now.sh --build
 bash CI-CD/05_verify.sh
 ```
+
+**Cách GitHub:** bump version → push main → Actions → **Build, Push & Deploy** →
+Run workflow (Deploy bật). Không cần lệnh local; `05_verify.sh` chỉ để kiểm tra
+thêm nếu muốn.
 
 Không cần tạo/push tag `v*`; repo không còn workflow release. Không build lại
 cùng một version rồi push đè image đã phát hành — hãy bump version.

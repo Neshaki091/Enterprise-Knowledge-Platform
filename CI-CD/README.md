@@ -19,9 +19,9 @@ Nguyên tắc cốt lõi: **VPS không build**. Image được build trên máy 
 `git pull` code/config và pull image từ Docker Hub. Mọi lần deploy đều đi qua
 `deploy_vps.sh` nên vẫn có health gate, auto-rollback và prune an toàn.
 
-> Đường deploy đầy đủ qua GitHub Actions (approval → SSH) đã được lược bỏ khỏi
-> repo để giảm phức tạp. Bước **build/push** có thể chạy trên GitHub bằng
-> `.github/workflows/build.yml` (tuỳ chọn, xem mục 6b); deploy vẫn từ máy local.
+> Đường deploy đầy đủ qua GitHub Actions đã được lược bỏ để giảm phức tạp.
+> Hiện có thể chạy **build + deploy tự động** bằng `.github/workflows/build.yml`
+> (tuỳ chọn, xem mục 6b), hoặc deploy từ máy local bằng `07_deploy_now.sh`.
 
 ---
 
@@ -39,7 +39,7 @@ Nguyên tắc cốt lõi: **VPS không build**. Image được build trên máy 
 | `deploy/registry/deploy_vps.sh` | Pull image, recreate stack, health gate, auto-rollback, prune |
 | `deploy/registry/build_and_push.sh` | Build/push `ekp-backend` + `ekp-nginx` (`linux/amd64`) |
 | `.github/workflows/ci.yml` | CI tuỳ chọn: pytest + build frontend khi push/PR (không cần secrets) |
-| `.github/workflows/build.yml` | Build/push image trên GitHub runner (tuỳ chọn, cần 1 secret) |
+| `.github/workflows/build.yml` | Build/push image và deploy VPS (tuỳ chọn) |
 
 ---
 
@@ -197,21 +197,47 @@ Quy tắc:
 
 ---
 
-## 6b. Build trên GitHub (tuỳ chọn, khuyến nghị)
+## 6b. Build + deploy trên GitHub (tuỳ chọn, khuyến nghị)
 
-Mục đích: máy local không cần bật Docker/build; GitHub runner build/push image,
-máy local chỉ ra lệnh deploy. Không cần đưa VPS key/host lên GitHub.
+Mục đích: một click chạy cả build/push và deploy; máy local không cần Docker,
+không cần SSH. Vẫn giữ health gate + auto-rollback của `deploy_vps.sh`.
+Không cần approval/Environment.
 
 **Chuẩn bị một lần:**
 
 0. Repo → Settings → Actions → General: bật **Allow all actions** (nếu đang tắt).
 1. Docker Hub → Account Settings → Security → New Access Token → quyền
    **Read & Write**; copy token (chỉ hiện một lần).
-2. GitHub repo → Settings → Secrets and variables → Actions → New repository
-   secret:
-   - `DOCKERHUB_TOKEN` = token vừa tạo
-   - (tuỳ chọn) `DOCKERHUB_USERNAME` nếu username Docker Hub không phải `neshaki091`
-3. Không cần tạo secret VPS nào.
+2. GitHub repo → Settings → Secrets and variables → Actions → tab **Secrets**,
+   tạo các repository secret:
+
+| Secret | Giá trị |
+|---|---|
+| `DOCKERHUB_TOKEN` | Token Docker Hub vừa tạo |
+| `VPS_HOST` | `api-e-k-p-neshaki091.duckdns.org` |
+| `VPS_USER` | `huynhluyen730` |
+| `VPS_APP_DIR` | `/home/huynhluyen730/Enterprise-Knowledge-Platform` |
+| `VPS_SSH_KEY` | Nội dung private key `~/.ssh/ekp_github_deploy` |
+| `VPS_KNOWN_HOSTS` | Nội dung `~/.ssh/ekp_known_hosts` |
+| `PUBLIC_HEALTH_URL` | `https://api-e-k-p-neshaki091.duckdns.org/health` (tuỳ chọn) |
+| `DOCKERHUB_USERNAME` | Chỉ cần nếu username không phải `neshaki091` |
+
+Key riêng đã được tạo tại `~/.ssh/ekp_github_deploy` và public key đã cài trên
+VPS (fingerprint `SHA256:QoONH0/Ag0JnKsCrwgc3CJwg2o9MPMZq9bULWM40uBo`).
+Copy private key vào clipboard rồi dán vào secret `VPS_SSH_KEY`:
+
+```bash
+clip < ~/.ssh/ekp_github_deploy      # dán vào VPS_SSH_KEY
+clip < ~/.ssh/ekp_known_hosts        # dán vào VPS_KNOWN_HOSTS
+# sau khi dán xong, xoá clipboard bằng cách copy một đoạn text bất kỳ
+```
+
+Không commit, không in private key ra chat/log. Nếu mất key, tạo key mới, thêm
+public key vào `~/.ssh/authorized_keys` trên VPS, rồi cập nhật secret.
+
+3. Port 22 phải cho GitHub runner vào được. VPS hiện không bật UFW; nếu deploy job
+   báo `ConnectTimeout`, mở GCP firewall cho dải IP trong
+   `https://api.github.com/meta` (mục `actions`).
 
 **Phát hành:**
 
@@ -221,22 +247,31 @@ git add backend/app/core/version.py
 git commit -m "release: v2.3.3"
 git push origin main
 
-# 2) GitHub → Actions → "Build & Push Images" → Run workflow
+# 2) GitHub → Actions → "Build, Push & Deploy" → Run workflow
 #    - branch: main
 #    - tag: để trống (tự đọc APP_VERSION) hoặc nhập 2.3.3
-#    Chờ workflow xanh; Summary có sẵn lệnh deploy.
-
-# 3) Deploy từ local (không cần --build, không cần Docker login)
-bash CI-CD/07_deploy_now.sh 2.3.3
-bash CI-CD/05_verify.sh
+#    - Deploy lên VPS: bật
+#    - Bỏ qua build: tắt
 ```
 
-Workflow sẽ từ chối nếu tag là `latest`, không khớp `APP_VERSION`, hoặc tag đã
-tồn tại trên Docker Hub (tránh ghi đè image đã phát hành). Nó dùng lại
-`build_and_push.sh` nên vẫn build `linux/amd64` và push cả `:X.Y.Z` lẫn `:latest`.
+Workflow chạy tuần tự:
 
-CI test (`ci.yml`) vẫn chạy độc lập khi push main. Có thể chạy CI trước, rồi chạy
-Build & Push, rồi deploy — ba bước tách biệt, không cần approval.
+1. Kiểm tra đủ VPS secrets **trước khi build** (thiếu thì fail, không push image).
+2. Validate tag, từ chối `latest`, tag không khớp `APP_VERSION`, tag đã tồn tại
+   (bỏ qua kiểm tra `APP_VERSION` nếu bật “Bỏ qua build”).
+3. Build/push `ekp-backend` + `ekp-nginx` lên Docker Hub (bỏ qua nếu “Bỏ qua build”).
+4. Deploy job SSH vào VPS: `git pull --ff-only` → cập nhật `IMAGE_TAG` trong `.env`
+   → `deploy_vps.sh` (pull, health gate, auto-rollback, prune).
+5. Gọi `PUBLIC_HEALTH_URL` nếu đã cấu hình.
+
+Không cần chạy lệnh nào ở local. Nếu deploy job fail sau khi image đã push, sửa
+lỗi trên VPS rồi chạy lại workflow với **cùng tag + bật “Bỏ qua build”** để
+deploy lại image có sẵn (không ghi đè tag). Muốn chỉ build, tắt “Deploy lên VPS”.
+“Bỏ qua build” cũng dùng được để deploy một tag cũ đã có trên Docker Hub (rollback
+thủ công), vì khi bật nó không bắt tag khớp `APP_VERSION` hiện tại.
+
+CI test (`ci.yml`) vẫn chạy độc lập khi push main. Workflow này không có bước
+approval; nếu cần duyệt sau này, thêm Environment cho job deploy.
 
 ---
 
@@ -269,8 +304,8 @@ Hai lớp bảo vệ:
 
 1. `deploy_vps.sh` health fail → tự rollback về image trước bằng tag
    `rollback-YYYYmmdd-HHMMSS`.
-2. `07` khôi phục `IMAGE_TAG` cũ trong `.env` để `docker compose` thủ công
-   không kéo lại image lỗi.
+2. `07` hoặc deploy job trên GitHub khôi phục `IMAGE_TAG` cũ trong `.env` để
+   `docker compose` thủ công không kéo lại image lỗi.
 
 Rollback thủ công:
 
@@ -296,6 +331,10 @@ ngược (expand/contract) để image cũ chạy được trên schema mới.
 | `could not read Username` / `Authentication failed` | Credential git trên VPS hết hạn | Làm mới PAT/credential; test `GIT_TERMINAL_PROMPT=0 git pull` |
 | Docker Hub `unauthorized` / `insufficient_scope` | Chưa login hoặc token sai/thiếu quyền | `docker login -u neshaki091`; token Read & Write |
 | Workflow build fail: tag đã tồn tại / không khớp `APP_VERSION` / login fail | Chưa bump version, tag nhập sai, hoặc thiếu `DOCKERHUB_TOKEN` | Bump `APP_VERSION`; kiểm tra secret và log workflow |
+| Workflow báo thiếu secret `VPS_*` | Chưa tạo đủ secret VPS | Tạo đủ 6 secret ở mục 6b, hoặc tắt “Deploy lên VPS” nếu chỉ muốn build |
+| Deploy job `Permission denied (publickey)` | `VPS_SSH_KEY` sai hoặc public key chưa cài trên VPS | Kiểm tra fingerprint; cài lại public key vào `~/.ssh/authorized_keys` |
+| Deploy job `ConnectTimeout` | GitHub runner không vào được port 22 | Mở GCP firewall cho dải IP `actions` trong `https://api.github.com/meta` |
+| Deploy job fail sau khi image đã push | VPS/migration/TLS lỗi | `deploy_vps.sh` đã rollback; sửa lỗi rồi chạy lại workflow với cùng tag + bật “Bỏ qua build” |
 | `manifest unknown` | Sai `IMAGE_TAG` hoặc chưa push | Kiểm tra tag trên Docker Hub; build/push lại |
 | `exec format error` | Image build sai kiến trúc | Build lại với `PLATFORM=linux/amd64` |
 | Nginx `502` | Backend chưa healthy | `docker compose logs backend`; chờ migration xong |
@@ -307,9 +346,13 @@ ngược (expand/contract) để image cũ chạy được trên schema mới.
 ## 10. Quy tắc an toàn
 
 - **Không commit** `.env`, `CI-CD/config.sh`, private key, token.
-- Deploy key chỉ dùng cho việc deploy; có thể thu hồi bằng cách xoá dòng trong
-  `~/.ssh/authorized_keys` trên VPS.
+- Deploy key cho GitHub là key **riêng** (`~/.ssh/ekp_github_deploy`), không dùng
+  lại key local; thu hồi bằng cách xoá public key khỏi `~/.ssh/authorized_keys`
+  trên VPS và xoá secret.
+- Không in private key ra terminal/chat; sau khi dán vào GitHub secret, xoá clipboard.
 - Token Docker Hub chỉ cấp quyền cần thiết (Read & Write), không dùng mật khẩu.
+- Workflow deploy không có approval mặc định; nếu cần audit, thêm Environment
+  `production` có Required reviewers cho job deploy.
 - Script kiểm tra tag (charset, không `latest`), đường dẫn, kiến trúc image và
   từ chối chạy nếu thiếu cấu hình.
 - Prune chỉ xoá image cũ của `ekp-backend`/`ekp-nginx` (giữ bản đang chạy + backup)
@@ -331,8 +374,8 @@ curl -fsS https://hub.docker.com/v2/repositories/neshaki091/ekp-backend/tags/ | 
 ```
 
 Quy trình còn lại: bump `APP_VERSION` → commit → push main →
+Actions → Build, Push & Deploy → Run workflow (Deploy bật) → kiểm tra health.
+Không dùng GitHub thì vẫn có fallback local:
 `07_deploy_now.sh --build` → `05_verify.sh`.
-Nếu build trên GitHub: Actions → Build & Push Images → Run workflow →
-`07_deploy_now.sh <tag>` (không `--build`) → `05_verify.sh`.
 
 Chi tiết khái niệm và lý do thiết kế: xem [learn.md](learn.md).

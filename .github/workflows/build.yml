@@ -1,22 +1,29 @@
 # ==============================================================================
-# Build Docker image trên GitHub runner và push lên Docker Hub.
+# Build Docker image trên GitHub runner và (tuỳ chọn) deploy thẳng lên VPS.
 #
-# Chạy tay: Actions → "Build & Push Images" → Run workflow.
-#   - Để trống ô tag: dùng APP_VERSION trong backend/app/core/version.py.
-#   - Nhập tag: phải khớp APP_VERSION và chưa tồn tại trên Docker Hub.
+# Chạy tay: Actions → "Build, Push & Deploy" → Run workflow.
+#   - tag: để trống = đọc APP_VERSION trong backend/app/core/version.py.
+#   - deploy: bật = build xong SSH vào VPS chạy deploy_vps.sh (health gate +
+#     auto-rollback). Tắt = chỉ build/push.
+#   - skip_build: bật = không build, chỉ deploy tag đã có (dùng khi retry deploy).
+#     Khi bật, workflow không kiểm tra tag khớp APP_VERSION, chỉ kiểm tra tag tồn tại.
 #
-# Không deploy. Sau khi workflow xanh, deploy từ máy local:
-#   bash CI-CD/07_deploy_now.sh <tag>
+# Secrets cần tạo (Settings → Secrets and variables → Actions → Secrets):
+#   DOCKERHUB_TOKEN    — Access Token quyền Read & Write (bắt buộc để build)
+#   VPS_HOST           — hostname/IP, vd api-e-k-p-neshaki091.duckdns.org
+#   VPS_USER           — user SSH trên VPS
+#   VPS_APP_DIR        — đường dẫn tuyệt đối repo trên VPS
+#   VPS_SSH_KEY        — private key RIÊNG cho GitHub (không dùng key local)
+#   VPS_KNOWN_HOSTS    — host key đã pin
+#   PUBLIC_HEALTH_URL  — tuỳ chọn, vd https://.../health
 #
-# Secret cần tạo (Settings → Secrets and variables → Actions):
-#   DOCKERHUB_TOKEN  — Access Token quyền Read & Write (do bạn tự tạo)
+# Username Docker Hub mặc định lấy từ vars.DOCKER_IMAGE_PREFIX hoặc "neshaki091";
+# có thể override bằng secret DOCKERHUB_USERNAME.
 #
-# Username mặc định lấy từ vars.DOCKER_IMAGE_PREFIX hoặc "neshaki091";
-# có thể override bằng secret DOCKERHUB_USERNAME nếu cần.
 # Guard "tag đã tồn tại" dùng API Docker Hub public; với image private, guard
 # này có thể bỏ qua (API trả 401/404) — khi đó tự đảm bảo không ghi đè tag.
 # ==============================================================================
-name: Build & Push Images
+name: Build, Push & Deploy
 
 on:
   workflow_dispatch:
@@ -25,6 +32,14 @@ on:
         description: "Tag image (để trống = đọc APP_VERSION; không dùng latest)"
         required: false
         default: ""
+      deploy:
+        description: "Deploy lên VPS sau khi build (cần đủ VPS secrets)"
+        type: boolean
+        default: true
+      skip_build:
+        description: "Bỏ qua build/push, chỉ deploy tag đã có trên Docker Hub"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,15 +53,37 @@ jobs:
     name: Build backend + nginx
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check deploy secrets
+        if: ${{ inputs.deploy }}
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in VPS_HOST VPS_USER VPS_APP_DIR VPS_SSH_KEY VPS_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Thiếu secret $name (hoặc bỏ chọn Deploy lên VPS)."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Resolve and validate tag
         id: version
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
+          SKIP_BUILD: ${{ inputs.skip_build }}
         run: |
           set -euo pipefail
           tag="${REQUESTED_TAG:-}"
@@ -60,13 +97,16 @@ jobs:
             *[!A-Za-z0-9_.-]*)
               echo "::error::Tag chứa ký tự không hợp lệ: $tag"; exit 1 ;;
           esac
-          grep -Fq "APP_VERSION = \"$tag\"" backend/app/core/version.py \
-            || { echo "::error::APP_VERSION không khớp tag $tag — bump version trước"; exit 1; }
+          if [ "$SKIP_BUILD" != "true" ]; then
+            grep -Fq "APP_VERSION = \"$tag\"" backend/app/core/version.py \
+              || { echo "::error::APP_VERSION không khớp tag $tag — bump version trước"; exit 1; }
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
-          echo "Sẽ build image tag: $tag"
+          echo "Sẽ dùng image tag: $tag"
 
       - name: Refuse to overwrite an existing tag
+        if: ${{ !inputs.skip_build }}
         env:
           PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
         run: |
@@ -83,13 +123,33 @@ jobs:
           done
           echo "Tag ${IMAGE_TAG} chưa tồn tại — an toàn để build."
 
+      - name: Verify existing tag
+        if: ${{ inputs.skip_build }}
+        env:
+          PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+        run: |
+          set -euo pipefail
+          for repo in ekp-backend ekp-nginx; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              "https://hub.docker.com/v2/repositories/${PREFIX}/${repo}/tags/${IMAGE_TAG}" \
+              || true)"
+            if [ "$code" != "200" ]; then
+              echo "::error::Tag ${IMAGE_TAG} chưa có trên ${PREFIX}/${repo}."
+              echo "::error::Bỏ chọn skip_build để build trước."
+              exit 1
+            fi
+          done
+          echo "Tag ${IMAGE_TAG} đã có — bỏ qua build/push."
+
       - name: Login to Docker Hub
+        if: ${{ !inputs.skip_build }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        if: ${{ !inputs.skip_build }}
         env:
           DOCKER_IMAGE_PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
         run: bash deploy/registry/build_and_push.sh
@@ -97,15 +157,154 @@ jobs:
       - name: Summary
         env:
           PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+          DEPLOY_ENABLED: ${{ inputs.deploy }}
+          SKIP_BUILD: ${{ inputs.skip_build }}
         run: |
           {
-            echo "### Đã push image"
+            if [ "$SKIP_BUILD" = "true" ]; then
+              echo "### Dùng image có sẵn"
+            else
+              echo "### Đã push image"
+            fi
             echo ""
             echo "- \`${PREFIX}/ekp-backend:${IMAGE_TAG}\`"
             echo "- \`${PREFIX}/ekp-nginx:${IMAGE_TAG}\`"
             echo ""
-            echo "Deploy từ máy local:"
-            echo '```bash'
-            echo "bash CI-CD/07_deploy_now.sh ${IMAGE_TAG}"
-            echo '```'
+            if [ "$DEPLOY_ENABLED" = "true" ]; then
+              echo "Deploy job sẽ chạy tiếp trên VPS."
+            else
+              echo "Deploy đang tắt. Chạy local:"
+              echo '```bash'
+              echo "bash CI-CD/07_deploy_now.sh ${IMAGE_TAG}"
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to VPS
+    needs: build
+    if: ${{ inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      PUBLIC_HEALTH_URL: ${{ secrets.PUBLIC_HEALTH_URL }}
+      IMAGE_TAG: ${{ needs.build.outputs.tag }}
+      IMAGE_PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+
+    steps:
+      - name: Validate deploy inputs
+        run: |
+          set -euo pipefail
+          [ -n "$VPS_HOST" ] || { echo "::error::Thiếu VPS_HOST"; exit 1; }
+          [ -n "$VPS_USER" ] || { echo "::error::Thiếu VPS_USER"; exit 1; }
+          [ -n "$VPS_APP_DIR" ] || { echo "::error::Thiếu VPS_APP_DIR"; exit 1; }
+          [ -n "$IMAGE_TAG" ] || { echo "::error::Thiếu IMAGE_TAG"; exit 1; }
+          case "$VPS_HOST" in
+            *://*|*/*|*@*|*' '*) echo "::error::VPS_HOST phải là hostname/IP"; exit 1 ;;
+            *[!A-Za-z0-9.-]*) echo "::error::VPS_HOST chứa ký tự lạ"; exit 1 ;;
+          esac
+          case "$VPS_USER" in
+            *@*|*/*|*' '*) echo "::error::VPS_USER không hợp lệ"; exit 1 ;;
+            *[!A-Za-z0-9._-]*) echo "::error::VPS_USER chứa ký tự lạ"; exit 1 ;;
+          esac
+          case "$VPS_APP_DIR" in
+            /*) ;;
+            *) echo "::error::VPS_APP_DIR phải là đường dẫn tuyệt đối"; exit 1 ;;
+          esac
+          case "$VPS_APP_DIR" in
+            *[!A-Za-z0-9/._-]*) echo "::error::VPS_APP_DIR chứa ký tự lạ"; exit 1 ;;
+          esac
+          case "$IMAGE_TAG" in
+            latest|'') echo "::error::IMAGE_TAG không hợp lệ"; exit 1 ;;
+            *[!A-Za-z0-9_.-]*) echo "::error::IMAGE_TAG chứa ký tự lạ"; exit 1 ;;
+          esac
+          echo "Deploy $IMAGE_TAG → $VPS_USER@$VPS_HOST:$VPS_APP_DIR"
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s' "$VPS_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          sed -i 's/\r$//' "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          [ -s "$HOME/.ssh/deploy_key" ] || { echo "::error::VPS_SSH_KEY rỗng"; exit 1; }
+          [ -s "$HOME/.ssh/known_hosts" ] || { echo "::error::VPS_KNOWN_HOSTS rỗng"; exit 1; }
+          if [ -n "$(tail -c 1 "$HOME/.ssh/deploy_key")" ]; then
+            printf '\n' >> "$HOME/.ssh/deploy_key"
+          fi
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          echo "SSH key hợp lệ."
+
+      - name: SSH deploy
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/deploy_key" \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -o ConnectTimeout=15 \
+              "$VPS_USER@$VPS_HOST" \
+              "VPS_APP_DIR='${VPS_APP_DIR}' IMAGE_TAG='${IMAGE_TAG}' IMAGE_PREFIX='${IMAGE_PREFIX}' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          export GIT_TERMINAL_PROMPT=0
+          cd "$VPS_APP_DIR"
+
+          sudo -n true || { echo "sudo cần mật khẩu trên VPS" >&2; exit 1; }
+          git pull --ff-only
+          test -f .env || { echo "Thiếu .env trên VPS" >&2; exit 1; }
+
+          ENV_PREFIX="$(grep -E '^DOCKER_IMAGE_PREFIX=' .env 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+          if [ -n "$ENV_PREFIX" ] && [ "$ENV_PREFIX" != "$IMAGE_PREFIX" ]; then
+            echo "Lệch registry: build '$IMAGE_PREFIX' nhưng .env là '$ENV_PREFIX'." >&2
+            exit 1
+          fi
+
+          OLD_TAG="$(sudo grep -E '^IMAGE_TAG=' .env 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)"
+          on_exit() {
+            rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ] && [ -n "$OLD_TAG" ]; then
+              sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${OLD_TAG}/" .env || true
+              echo "Deploy lỗi: đã khôi phục IMAGE_TAG=${OLD_TAG} trong .env" >&2
+            fi
+            exit "$rc"
+          }
+          trap on_exit EXIT
+
+          if sudo grep -q '^IMAGE_TAG=' .env; then
+            sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${IMAGE_TAG}/" .env
+          else
+            printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" | sudo tee -a .env >/dev/null
+          fi
+          sudo chmod 600 .env
+
+          sudo bash deploy/registry/deploy_vps.sh
+          echo "IMAGE_TAG sau deploy: $(grep '^IMAGE_TAG=' .env || echo '?')"
+          REMOTE
+
+      - name: Public health
+        run: |
+          set -euo pipefail
+          if [ -z "${PUBLIC_HEALTH_URL:-}" ]; then
+            echo "Bỏ qua: chưa cấu hình PUBLIC_HEALTH_URL"
+            exit 0
+          fi
+          for i in $(seq 1 12); do
+            body="$(curl -fsS --max-time 10 "$PUBLIC_HEALTH_URL" || true)"
+            if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+              echo "Public health OK"
+              exit 0
+            fi
+            echo "Lần $i: chưa healthy, chờ 5s..."
+            sleep 5
+          done
+          echo "::error::Public health không healthy sau 60s"
+          exit 1
