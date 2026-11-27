@@ -46,5 +46,5 @@
 
 | Sprint | Giai đoạn | Tên Sprint & Trọng tâm | Trạng thái | File chi tiết |
 |---|---|---|---|---|
-| **Sprint 9** | Phase 3 | Synthetic Business-Hours Workload (20 user/ngày) & Saturation Testing via k6 | 🟢 **Sẵn sàng triển khai** | [sprint-9-synthetic-business-hours-load.md](task/sprint-9-synthetic-business-hours-load.md) |
+| **Sprint 9** | Phase 3 | LLM-Driven UX Simulation (`phase3_ux_sim/`, 100 LLM Users 1-time Seed, Supabase Cloud Telemetry & MCP Test via GitHub Actions) + Saturation k6 | 🟢 **Đang triển khai** | [sprint-9-synthetic-business-hours-load.md](task/sprint-9-synthetic-business-hours-load.md) |
 | **Sprint 10** | Phase 3 | Pentest Bảo mật, Vận hành 4 tuần trên VPS thật & Portfolio | ⏳ **Chờ Sprint 9** | [sprint-10-pentest-operations.md](task/sprint-10-pentest-operations.md) |

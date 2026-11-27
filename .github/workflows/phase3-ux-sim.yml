@@ -1,0 +1,95 @@
+name: Phase 3 - LLM UX Simulation & Supabase MCP
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_api_url:
+        description: "Backend URL (ví dụ https://ekp.duckdns.org) hoặc asgi://local"
+        required: true
+        default: "asgi://local"
+      target_users:
+        description: "Tổng số User ID seed 1 lần (mặc định 100)"
+        required: false
+        default: "100"
+      active_users:
+        description: "Số user ngẫu nhiên chạy phiên UX trong lần chạy này (mặc định 20/ngày)"
+        required: false
+        default: "20"
+      steps_per_user:
+        description: "Số hành động tối đa mỗi user (thực tế random 1..N bước)"
+        required: false
+        default: "4"
+      max_llm_queries:
+        description: "Giới hạn tối đa số query tra cứu RAG LLM toàn run (mặc định 20 để giữ egress < 0.8GB)"
+        required: false
+        default: "20"
+      seed_only:
+        description: "Chỉ seed 100 user 1 lần, chưa chạy mô phỏng"
+        type: boolean
+        default: false
+      offline_llm:
+        description: "Chạy fallback không gọi Google API"
+        type: boolean
+        default: false
+      llm_models:
+        description: "Danh sách model Simulator xoay vòng (vd: gemini-3.1-flash-lite,gemini-3.5-flash-lite)"
+        required: false
+        default: "gemini-3.1-flash-lite,gemini-3.5-flash-lite"
+  # schedule tạm tắt cho đến khi cấu hình đủ secrets Supabase/Google.
+
+jobs:
+  ux-simulation:
+    name: Run Phase 3 LLM UX Simulation & MCP Supabase Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r phase3_ux_sim/requirements.txt
+          if [ "${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'asgi://local' }}" = "asgi://local" ]; then
+            pip install -r requirements.txt greenlet
+          fi
+
+      - name: Run Phase 3 UX Simulation & MCP Verification
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SIM_MCP_DB_URL: ${{ secrets.SIM_MCP_DB_URL }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SIM_TENANT_SECRET: ${{ secrets.SIM_TENANT_SECRET }}
+          SIM_LLM_MODELS: ${{ inputs.llm_models || vars.SIM_LLM_MODELS || 'gemini-3.1-flash-lite,gemini-3.5-flash-lite' }}
+          SIM_LLM_RPM_LIMIT: ${{ vars.SIM_LLM_RPM_LIMIT || '25' }}
+          SIM_LLM_RPD_LIMIT: ${{ vars.SIM_LLM_RPD_LIMIT || '480' }}
+          SIM_MAX_LLM_QUERIES: ${{ inputs.max_llm_queries || vars.SIM_MAX_LLM_QUERIES || '20' }}
+          SIM_MCP_ALLOWED_TABLES: ${{ vars.SIM_MCP_ALLOWED_TABLES || 'ux_sim_events,ux_sim_users,ux_sim_runs' }}
+          SIM_MCP_TEST_SQL: ${{ vars.SIM_MCP_TEST_SQL || 'SELECT id, user_id, action_type, http_status, total_latency_ms FROM ux_sim_events ORDER BY timestamp_utc DESC LIMIT 5' }}
+        run: |
+          TARGET_URL="${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'asgi://local' }}"
+          EXTRA_FLAGS=""
+          if [ "${{ inputs.seed_only }}" = "true" ]; then EXTRA_FLAGS="$EXTRA_FLAGS --seed-only"; fi
+          if [ "${{ inputs.offline_llm }}" = "true" ]; then EXTRA_FLAGS="$EXTRA_FLAGS --offline-llm"; fi
+          python -m phase3_ux_sim.runner \
+            --target-url "$TARGET_URL" \
+            --target-users "${{ inputs.target_users || '100' }}" \
+            --active-users "${{ inputs.active_users || '20' }}" \
+            --steps "${{ inputs.steps_per_user || '4' }}" \
+            --max-llm-queries "${{ inputs.max_llm_queries || '20' }}" \
+            --source github-actions \
+            $EXTRA_FLAGS
+
+      - name: Upload Phase 3 UX Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-ux-report-${{ github.run_number }}
+          path: phase3_ux_sim/reports/
+          retention-days: 30

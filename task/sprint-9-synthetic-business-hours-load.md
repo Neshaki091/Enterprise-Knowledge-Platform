@@ -1,8 +1,31 @@
-# SPRINT 9 (PHASE 3): Synthetic Business-Hours Workload & Saturation Testing via k6
+# SPRINT 9 (PHASE 3): LLM-Driven UX Simulation, Supabase Cloud Telemetry & MCP Test
 
-**Mục tiêu:** Xây dựng tải mô phỏng hành vi nhân viên doanh nghiệp trong giờ làm việc (8h–17h), bắn từ laptop qua Internet vào hệ thống 1 GB RAM, nằm trong trần quota 30 RPM / 16K TPM và ngân sách egress 1 GB/tháng; đo điểm bão hòa thật thay vì chạy 10.000 VU không khả thi.  
-**Ước tính thời gian:** 2 – 3 tuần  
-**Trạng thái:** 🟢 Sẵn sàng triển khai (Phase 2 đã hoàn thành)
+**Mục tiêu:** Xây dựng công cụ độc lập [phase3_ux_sim/](../phase3_ux_sim/README.md) chạy trên local và tự động hóa qua GitHub Actions (`.github/workflows/phase3-ux-sim.yml`), mô phỏng hành vi đọc-hỏi thật bằng LLM, lưu toàn bộ lịch sử UX lên Supabase Cloud DB và kiểm thử kết nối MCP Zero-Knowledge tới DB Supabase Cloud dự án cũ.
+
+**Ước tính thời gian:** 2 – 3 tuần
+
+**Trạng thái:** 🟢 Đang triển khai (Phase 2 đã hoàn thành)
+
+---
+
+## 0A. KIẾN TRÚC TOOL MÔ PHỎNG UX & SUPABASE CLOUD (`phase3_ux_sim/`)
+
+1. **Khởi tạo 100 User ID duy nhất 1 lần bằng LLM:**
+   - Tool gọi LLM tạo danh sách ~100 hồ sơ nhân sự (`email`/`username`, `password`, `role`, `department`, `persona`), phân bổ đều trên 10 Tenants (10 user/tenant để tôn trọng trần `max_users=10` gói FREE).
+   - Kiểm tra bảng `ux_sim_users` trên **Supabase Cloud DB** trước: **chỉ tạo các user còn thiếu cho đủ 100 và KHÔNG BAO GIỜ tạo trùng ở các lần chạy sau**; các lần sau đăng nhập lại bằng thông tin đã lưu.
+2. **Hành động & Câu hỏi sinh bởi LLM theo ngữ cảnh đọc thật:**
+   - Khi yêu cầu LLM sinh hành động/câu hỏi tiếp theo cho một `user_id`, bắt buộc truyền kèm **`last_query` + `last_llm_reply`** (câu trả lời RAG gần nhất mà user vừa đọc) để sinh câu hỏi nối tiếp tự nhiên, tìm kiếm lại nếu thiếu ý, gửi feedback (`THUMBS_UP` / `THUMBS_DOWN`), hoặc thoát phiên.
+3. **Lưu vết toàn bộ lên Supabase Cloud DB theo từng timestamp:**
+   - Bảng `ux_sim_users`, `ux_sim_runs`, `ux_sim_events`, `ux_sim_mcp_checks` lưu đủ: `user_id`, `tenant_id`, `timestamp_utc`, `action_type`, `query`, `llm_reply`, `context`, `ttfb_ms`, `total_latency_ms`, `tokens`, `http_status`, `feedback_rating`.
+4. **Test kết nối MCP bằng Supabase Cloud DB dự án cũ:**
+   - Dùng API `/api/v1/mcp/external-db` (AES-256-GCM + `tenant_secret`) + `/api/v1/mcp/external-db/token` (`db_jwt`) + tool `query_enterprise_db` truy vấn thật vào DB Supabase Cloud và kiểm định chặn bảng ngoài whitelist / DDL.
+5. **Tổng hợp toàn diện chỉ số UX (UX Scorecard) & Chạy trên GitHub Actions:**
+   - Tính TTFT P50/P95/P99, E2E Latency P95, Compression Savings %, Rate-Limit 429 Friction %, Refusal Rate %, Follow-Up Rate %, Satisfaction (`THUMBS_UP`) % và kết quả MCP; xuất lên `$GITHUB_STEP_SUMMARY`.
+6. **Điều phối Multi-Model Flash-Lite Pool độc lập với Backend Gemma:**
+   - Simulator xoay vòng `gemini-3.1-flash-lite` và `gemini-3.5-flash-lite` (`SIM_LLM_MODELS`) với bộ giới hạn riêng mỗi model (`25 RPM` / `480 RPD`, tổng `~960–1.000 RPD` hiệu dụng) và tự động failover khi gặp `429/503`, không tranh chấp quota của `gemma-4-26b-a4b-it` bên Backend RAG.
+7. **Hành vi ngẫu nhiên & Trần 20 LLM Query/Run bảo vệ Egress < 0,8 GB/tháng:**
+   - Mỗi lần chạy lấy mẫu ngẫu nhiên user (`random.sample`), số bước ngẫu nhiên (`1..N`) và hành động ngẫu nhiên (không gò ép làm đủ mọi bước).
+   - Giới hạn cứng `SIM_MAX_LLM_QUERIES=20` cho toàn bộ phiên chạy (các lượt vượt trần tự chuyển sang `search_hybrid` / `list_documents` nhẹ), đảm bảo khi chạy chung với tải SOAK 5 ngày (`0,6–0,8 GB/tháng`) vẫn không vượt ngưỡng `0,8 GB` egress của GCP Always Free.
 
 ---
 
