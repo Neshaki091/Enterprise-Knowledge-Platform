@@ -28,6 +28,9 @@ fi
 chmod 600 "$VPS_SSH_KEY" 2>/dev/null || true
 chmod 644 "$VPS_SSH_KEY.pub" 2>/dev/null || true
 
+say "Deploy key fingerprint (local)"
+ssh-keygen -lf "$VPS_SSH_KEY.pub" || true
+
 say "Quét host key vào $VPS_KNOWN_HOSTS"
 mkdir -p "$(dirname "$VPS_KNOWN_HOSTS")"
 ssh-keyscan -H "$VPS_HOST" > "$VPS_KNOWN_HOSTS" 2>/dev/null
@@ -66,8 +69,16 @@ browser SSH). Mở terminal browser tới VPS, dán 3 lệnh sau:
 
 Sau đó chạy lại: bash CI-CD/01_setup_ssh.sh
 
-Nếu VPS dùng OS Login, key thêm vào authorized_keys có thể không được dùng;
-khi đó thêm public key qua GCP metadata/OS Login rồi chạy lại script.
+Kiểm tra trên VPS (phải thấy fingerprint của deploy key):
+  whoami
+  grep -c github-actions-ekp ~/.ssh/authorized_keys
+  ssh-keygen -lf ~/.ssh/authorized_keys
+
+Fingerprint cần thấy: $(ssh-keygen -lf "$VPS_SSH_KEY.pub" 2>/dev/null | awk '{print $2}')
+
+Nếu VPS dùng OS Login hoặc guest agent tự ghi lại authorized_keys, key thêm
+thủ công có thể bị bỏ qua/biến mất; khi đó thêm public key qua GCP metadata
+(SSH Keys của VM) hoặc OS Login rồi chạy lại script.
 EOF
     exit 1
 fi
