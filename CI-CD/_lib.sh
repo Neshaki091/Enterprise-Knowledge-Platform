@@ -48,6 +48,18 @@ require_vps_target() {
     if is_placeholder "$VPS_APP_DIR"; then
         die "VPS_APP_DIR chưa được sửa trong $CONFIG_FILE"
     fi
+    case "$VPS_HOST" in
+        *://*|*/*|*@*|*' '*)
+            die "VPS_HOST phải là hostname/IP, không kèm scheme hay path (nhận: $VPS_HOST)" ;;
+        *[!A-Za-z0-9.-]*)
+            die "VPS_HOST chứa ký tự không hợp lệ: $VPS_HOST" ;;
+    esac
+    case "$VPS_USER" in
+        *@*|*/*|*' '*)
+            die "VPS_USER phải là username SSH, không chứa @ hay '/', khoảng trắng (nhận: $VPS_USER)" ;;
+        *[!A-Za-z0-9._-]*)
+            die "VPS_USER chứa ký tự không hợp lệ: $VPS_USER" ;;
+    esac
     case "$VPS_APP_DIR" in
         /*) ;;
         *) die "VPS_APP_DIR phải là đường dẫn tuyệt đối trên VPS (vd /home/user/SaaS_Chatbot_platform)" ;;

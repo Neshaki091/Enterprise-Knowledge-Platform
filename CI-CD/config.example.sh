@@ -5,9 +5,10 @@
 # ==============================================================================
 
 # SSH tới VPS
-VPS_HOST="CHANGE_ME.duckdns.org"          # domain DuckDNS hoặc IP, dùng thống nhất mọi nơi
+# VPS_HOST CHỈ hostname/IP: không kèm https://, không kèm /health.
+VPS_HOST="CHANGE_ME.duckdns.org"
 VPS_USER="CHANGE_ME"                       # whoami trên VPS
-VPS_APP_DIR="/home/CHANGE_ME/SaaS_Chatbot_platform"   # pwd trong repo trên VPS
+VPS_APP_DIR="/home/CHANGE_ME/Enterprise-Knowledge-Platform"   # pwd trong repo trên VPS
 
 # File trên máy local (Git Bash)
 VPS_SSH_KEY="$HOME/.ssh/ekp_deploy"
