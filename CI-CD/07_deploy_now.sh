@@ -27,7 +27,7 @@ for arg in "$@"; do
     case "$arg" in
         --build) BUILD=1 ;;
         --dry-run) DRY_RUN=1 ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
         --*) die "Tham số không hợp lệ: $arg" ;;
         *)
             [ -z "$TAG_ARG" ] || die "Chỉ nhận một tag"
