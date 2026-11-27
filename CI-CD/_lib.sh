@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Thư viện dùng chung cho bộ script CI/CD trong thư mục CI-CD/.
-# Không chạy trực tiếp; các script 00..06 source file này.
+# Không chạy trực tiếp; các script 00/01/05/06/07 source file này.
 # ==============================================================================
 set -Eeuo pipefail
 
@@ -25,14 +25,6 @@ is_placeholder() {
         ''|*CHANGE_ME*) return 0 ;;
         *) return 1 ;;
     esac
-}
-
-require_repo_config() {
-    [ -n "${REPO_SLUG:-}" ] || die "Thiếu REPO_SLUG trong $CONFIG_FILE"
-    [ -n "${GITHUB_ENV_NAME:-}" ] || die "Thiếu GITHUB_ENV_NAME trong $CONFIG_FILE"
-    if is_placeholder "$REPO_SLUG"; then
-        die "REPO_SLUG chưa được sửa trong $CONFIG_FILE"
-    fi
 }
 
 require_vps_target() {
@@ -75,12 +67,6 @@ require_vps_config() {
     [ -n "${VPS_KNOWN_HOSTS:-}" ] || die "Thiếu VPS_KNOWN_HOSTS trong $CONFIG_FILE"
     [ -f "$VPS_SSH_KEY" ] || die "Không thấy private key: $VPS_SSH_KEY (chạy 01_setup_ssh.sh)"
     [ -f "$VPS_KNOWN_HOSTS" ] || die "Không thấy known_hosts: $VPS_KNOWN_HOSTS (chạy 01_setup_ssh.sh)"
-}
-
-require_gh() {
-    command -v gh >/dev/null 2>&1 \
-        || die "Chưa cài gh CLI. Windows: winget install --id GitHub.cli, mở lại Git Bash, rồi 'gh auth login'"
-    gh auth status >/dev/null 2>&1 || die "gh chưa đăng nhập: chạy 'gh auth login'"
 }
 
 vps_ssh() {

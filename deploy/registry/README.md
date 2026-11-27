@@ -243,87 +243,57 @@ Rollback image **không** rollback migration CSDL — migration phải tương t
 
 ---
 
-## 5b. CI/CD: tag → test → build/push → duyệt → deploy
+## 5b. CI/CD hiện tại: build local → Docker Hub → deploy
 
-Workflow [`.github/workflows/release.yml`](../../.github/workflows/release.yml) chạy khi push tag `v*`
-hoặc chạy tay (workflow_dispatch). VPS vẫn chỉ pull image, không build.
+Repo dùng **đường nhẹ**, không cần GitHub Actions/secrets/environment. VPS vẫn chỉ
+pull image, không build.
 
 Luồng:
 
-1. **meta**: validate tag (`v` + phiên bản, từ chối `latest`/ký tự lạ).
-2. **verify**: `pytest backend/tests`, build frontend, kiểm tra `APP_VERSION` trong
-   `backend/app/core/version.py` khớp tag.
-3. **publish**: login Docker Hub, build/push `ekp-backend` + `ekp-nginx` tag/`latest`,
-   ghi digest vào Step Summary.
-4. **deploy**: chờ duyệt ở Environment `production`, rồi SSH vào VPS:
-   `sudo -n` check → `git pull --ff-only` → cập nhật `IMAGE_TAG` trong `.env` →
-   `deploy_vps.sh` (pull, health gate, tự rollback nếu lỗi).
-5. **verify**: gọi `PUBLIC_HEALTH_URL` từ runner (nếu đã cấu hình).
+1. Máy local: `bash CI-CD/07_deploy_now.sh --build` build/push
+   `ekp-backend` + `ekp-nginx` với tag `APP_VERSION`.
+2. SSH vào VPS: `sudo -n` → `git pull --ff-only` → kiểm tra prefix registry →
+   cập nhật `IMAGE_TAG` trong `.env` (chmod 600).
+3. `deploy_vps.sh`: pull, recreate, health gate, tự rollback nếu lỗi, prune an toàn.
+4. Nếu deploy lỗi, `07` khôi phục `IMAGE_TAG` cũ trong `.env`.
+5. `bash CI-CD/05_verify.sh` kiểm tra public health + trạng thái stack.
 
 ### Thiết lập một lần
 
 ```bash
-# 1. Deploy key riêng cho GitHub Actions (không dùng key cá nhân)
-ssh-keygen -t ed25519 -C "github-actions-ekp" -f ~/.ssh/ekp_deploy -N ""
-ssh-copy-id -i ~/.ssh/ekp_deploy.pub <user>@<vps>
-ssh -i ~/.ssh/ekp_deploy <user>@<vps> "sudo -n true && echo SUDO_OK"
-# Phải in SUDO_OK; nếu không, cấu hình NOPASSWD cho lệnh deploy trên VPS.
+# Deploy key riêng + pin host key (in fingerprint để đối chiếu với VPS)
+bash CI-CD/01_setup_ssh.sh
 
-# 2. Pin host key (đối chiếu fingerprint với VPS)
-ssh-keyscan -H <vps> > known_hosts
-# Trên VPS: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub  → so khớp fingerprint
+# Preflight VPS: repo sạch, git pull, .env, compose, sudo
+bash CI-CD/00_check_vps.sh
 
-# 3. Secrets: Docker Hub ở cấp repository
-gh secret set DOCKERHUB_USERNAME
-gh secret set DOCKERHUB_TOKEN                 # token read/write
-
-# 4. Secrets + variables: ở Environment "production"
-gh secret set VPS_HOST --env production
-gh secret set VPS_USER --env production
-gh secret set VPS_SSH_KEY --env production < ~/.ssh/ekp_deploy
-gh secret set VPS_KNOWN_HOSTS --env production < known_hosts
-gh variable set VPS_APP_DIR --env production --body "/opt/SaaS_Chatbot_platform"
-# Tùy chọn, chỉ bật sau khi TLS đã cấp:
-gh variable set PUBLIC_HEALTH_URL --env production --body "https://<domain>.duckdns.org/health"
+# Đăng nhập Docker Hub để build/push
+docker login -u <DOCKERHUB_USERNAME>
 ```
 
-Vào GitHub → Settings → Environments → New environment `production` →
-Required reviewers (ví dụ chính bạn). Nếu chưa tạo environment, job deploy vẫn
-chạy được nếu secret nằm ở cấp repo nhưng sẽ **không có bước duyệt**.
-
-Repo private: đảm bảo `git pull` trên VPS chạy được không tương tác (credential
-helper/PAT còn hạn); workflow đặt `GIT_TERMINAL_PROMPT=0` để fail nhanh thay vì treo.
-UFW/cloud firewall phải cho phép SSH (22) từ GitHub-hosted runner; nếu đang giới
-hạn theo IP nhà, mở thêm dải IP trong `https://api.github.com/meta` (mục `actions`).
+Cấu hình nằm trong `CI-CD/config.sh` (gitignore). Chi tiết: [CI-CD/README.md](../../CI-CD/README.md).
 
 ### Phát hành
 
 ```bash
-# Bump APP_VERSION trong backend/app/core/version.py (nguồn duy nhất;
-# FastAPI, health, MCP server và test đều import hằng số này)
+# Bump APP_VERSION trong backend/app/core/version.py (nguồn duy nhất)
 git add backend/app/core/version.py
 git commit -m "release: v2.3.3"
 git push origin main
 
-git tag v2.3.3
-git push origin v2.3.3
+bash CI-CD/07_deploy_now.sh --dry-run
+bash CI-CD/07_deploy_now.sh --build
+bash CI-CD/05_verify.sh
 ```
 
-Theo dõi ở tab Actions → "Release & Deploy". Publish xong, job deploy dừng chờ
-duyệt; approve thì VPS được cập nhật. Health fail → `deploy_vps.sh` tự rollback,
-job đỏ, VPS giữ bản cũ; workflow cũng khôi phục `IMAGE_TAG` cũ trong `.env` để
-thao tác compose thủ công không kéo lại image lỗi. Tag phải trỏ tới commit đã chứa workflow này.
+Không cần tạo/push tag `v*`; repo không còn workflow release. Không build lại
+cùng một version rồi push đè image đã phát hành — hãy bump version.
 
-Rollback: không đẩy lại tag cũ (sẽ rebuild/ghi đè image tag đó). Dùng tag
-`previous` trên VPS:
+Rollback: `bash CI-CD/06_rollback.sh` hoặc trên VPS:
 
 ```bash
 sudo IMAGE_TAG=previous bash deploy/registry/deploy_vps.sh --no-pull --no-prune
 ```
-
-Hoặc sửa `IMAGE_TAG` trong `.env` về tag cũ rồi chạy lại script (image cũ vẫn
-trên Docker Hub). Có thể chạy lại workflow bằng workflow_dispatch với tag hiện
-tại để redeploy mà không tạo commit mới.
 
 ---
 

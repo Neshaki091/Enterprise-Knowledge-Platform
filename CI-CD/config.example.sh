@@ -14,9 +14,7 @@ VPS_APP_DIR="/home/CHANGE_ME/Enterprise-Knowledge-Platform"   # pwd trong repo t
 VPS_SSH_KEY="$HOME/.ssh/ekp_deploy"
 VPS_KNOWN_HOSTS="$HOME/.ssh/ekp_known_hosts"
 
-# GitHub
-REPO_SLUG="Neshaki091/Enterprise-Knowledge-Platform"
-GITHUB_ENV_NAME="production"
+# Docker Hub (namespace dùng khi build/push từ máy local)
 DOCKERHUB_USERNAME="neshaki091"
 
 # Health check công khai sau deploy (để trống nếu chưa có TLS)

@@ -1,4 +1,4 @@
-name: CI/CD Pipeline - Enterprise SaaS Platform
+name: CI Pipeline - Enterprise SaaS Platform
 
 on:
   push:
