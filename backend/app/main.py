@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core import rls
 from app.core.database import verify_rls_database_role
+from app.core.http_client import close_shared_http_client
 from app.api.v1.router import api_router
 
 
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI):
     yield
     # Dọn dẹp khi tắt (Shutdown)
     print("🛑 Đang dọn dẹp tài nguyên và tắt ứng dụng...")
+    await close_shared_http_client()
 
 
 # Vô hiệu hóa Swagger Docs trên production để bảo vệ an toàn (SEC-025)
@@ -26,7 +28,7 @@ openapi_url = "/openapi.json" if settings.ENVIRONMENT != "production" else None
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="2.1.0",
+    version="2.3.2",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,

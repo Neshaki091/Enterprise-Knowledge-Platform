@@ -7,13 +7,16 @@ Thứ tự bắt buộc:
 3. Gửi tín hiệu hoàn tất (event: done) kèm thống kê nén token.
 """
 
+import asyncio
 import json
 import time
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, List, Optional
 from fastapi import HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.core import rls
 from app.core.context import TenantContext
 from app.core.access import ensure_department_allowed
 from app.models.tenant import Tenant
@@ -26,6 +29,10 @@ from app.services.llm_service import LLMService
 from app.services.telemetry_service import TelemetryService
 
 logger = logging.getLogger(__name__)
+
+# Gom token SSE để giảm overhead khung JSON (~40-60 bytes/token) và số lần render frontend.
+_SSE_TOKEN_FLUSH_CHARS = 24
+_SSE_TOKEN_FLUSH_INTERVAL_SECONDS = 0.05
 
 
 class StreamingChatService:
@@ -92,6 +99,7 @@ class StreamingChatService:
         """
         started = time.perf_counter()
         tenant_str = str(context.tenant_id)
+        session_bind = db.bind
 
         # 1. Xác thực phạm vi phòng ban + hạn mức hiệu lực của Tenant
         allowed_departments = ensure_department_allowed(context, request.department_id)
@@ -142,8 +150,9 @@ class StreamingChatService:
             allowed_department_ids=allowed_departments,
         )
 
-        # 3. Lọc ngữ cảnh 3 tầng (Tối ưu cho trần 16K TPM của Gemma 4 26B)
-        filtered_context, stats = ContextFilterPipeline.filter_and_compress(
+        # 3. Lọc ngữ cảnh 3 tầng (CPU-bound -> thread, không chặn event loop)
+        filtered_context, stats = await asyncio.to_thread(
+            ContextFilterPipeline.filter_and_compress,
             query=request.query,
             candidates=search_res.results,
             max_chunks=min(request.top_k, 3),
@@ -158,7 +167,20 @@ class StreamingChatService:
             tpm_limit=tpm_limit,
         )
 
-        # 4. BẮT BUỘC TRẢ VỀ CHUNKS TRƯỚC TIÊN (ngay cả khi LLM dùng mock hay real)
+        # 4. Giải phóng connection DB trước khi stream LLM 20-60 giây.
+        # Telemetry cuối stream dùng một session ngắn riêng, nhờ đó 30 SSE đồng thời
+        # không còn chiếm 30 connection trong pool (tránh health check timeout).
+        session_factory = (
+            async_sessionmaker(bind=session_bind, expire_on_commit=False, autoflush=False)
+            if session_bind is not None
+            else AsyncSessionLocal
+        )
+        try:
+            await db.close()
+        except Exception as exc:
+            logger.warning("Không thể đóng DB session trước khi stream LLM: %s", exc)
+
+        # 5. BẮT BUỘC TRẢ VỀ CHUNKS TRƯỚC TIÊN (ngay cả khi LLM dùng mock hay real)
         chunks_payload = [
             {
                 "child_chunk_id": str(r.child_chunk_id),
@@ -176,7 +198,7 @@ class StreamingChatService:
         ]
         yield f"data: {json.dumps({'type': 'chunks', 'data': chunks_payload, 'compression_stats': stats}, ensure_ascii=False)}\n\n"
 
-        # 5. Phát sự kiện Citations
+        # 6. Phát sự kiện Citations
         citations_data = [
             {
                 "document_id": str(r.document_id),
@@ -189,8 +211,11 @@ class StreamingChatService:
         ]
         yield f"data: {json.dumps({'type': 'citations', 'data': citations_data}, ensure_ascii=False)}\n\n"
 
-        # 6. Phát luồng câu trả lời từ LLMService (hỗ trợ cả 'real' lẫn 'mock' / 'retrieval_only')
+        # 7. Phát luồng câu trả lời từ LLMService (hỗ trợ cả 'real' lẫn 'mock' / 'retrieval_only')
         streamed_chars = 0
+        token_buffer: List[str] = []
+        buffered_chars = 0
+        last_flush = time.monotonic()
         try:
             async for token_piece in LLMService.stream_answer(
                 query=request.query,
@@ -198,7 +223,18 @@ class StreamingChatService:
                 mode=request.mode,
             ):
                 streamed_chars += len(token_piece)
-                yield f"data: {json.dumps({'type': 'token', 'content': token_piece}, ensure_ascii=False)}\n\n"
+                token_buffer.append(token_piece)
+                buffered_chars += len(token_piece)
+                now = time.monotonic()
+                if buffered_chars >= _SSE_TOKEN_FLUSH_CHARS or (now - last_flush) >= _SSE_TOKEN_FLUSH_INTERVAL_SECONDS:
+                    chunk_text = "".join(token_buffer)
+                    token_buffer.clear()
+                    buffered_chars = 0
+                    last_flush = now
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk_text}, ensure_ascii=False)}\n\n"
+
+            if token_buffer:
+                yield f"data: {json.dumps({'type': 'token', 'content': ''.join(token_buffer)}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.error("Lỗi trong lúc stream LLM: %s", exc)
             await TelemetryService.record_event(
@@ -228,27 +264,38 @@ class StreamingChatService:
             tpm_limit=tpm_limit,
         )
 
-        await TelemetryService.record_event(
-            db,
-            event_type="chat_stream",
-            tenant_id=context.tenant_id,
-            user_id=context.user_id,
-            model_name=settings.LLM_MODEL if request.mode in ("real", "hybrid") else request.mode,
-            mode=request.mode,
-            status_code=200,
-            latency_ms=(time.perf_counter() - started) * 1000.0,
-            input_tokens=stats.get("original_tokens", 0),
-            compressed_tokens=stats.get("compressed_tokens", 0),
-            output_tokens=output_tokens,
-            details={
-                "savings_percent": stats.get("savings_percent", 0.0),
-                "retained_chunks": stats.get("retained_chunks", 0),
-            },
-            persist=True,
-        )
-        await db.commit()
+        # Gắn lại ngữ cảnh RLS cho session telemetry ngắn: body SSE được tiêu thụ
+        # sau khi middleware request có thể đã reset contextvar.
+        tenant_token = rls.current_tenant_id.set(str(context.tenant_id))
+        user_token = rls.current_user_id.set(str(context.user_id))
+        bypass_token = rls.rls_bypass.set(False)
+        try:
+            async with session_factory() as telemetry_db:
+                await TelemetryService.record_event(
+                    telemetry_db,
+                    event_type="chat_stream",
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                    model_name=settings.LLM_MODEL if request.mode in ("real", "hybrid") else request.mode,
+                    mode=request.mode,
+                    status_code=200,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    input_tokens=stats.get("original_tokens", 0),
+                    compressed_tokens=stats.get("compressed_tokens", 0),
+                    output_tokens=output_tokens,
+                    details={
+                        "savings_percent": stats.get("savings_percent", 0.0),
+                        "retained_chunks": stats.get("retained_chunks", 0),
+                    },
+                    persist=True,
+                )
+                await telemetry_db.commit()
+        finally:
+            rls.rls_bypass.reset(bypass_token)
+            rls.current_user_id.reset(user_token)
+            rls.current_tenant_id.reset(tenant_token)
 
-        # 7. Phát sự kiện Hoàn tất (Done)
+        # 8. Phát sự kiện Hoàn tất (Done)
         done_payload = {
             "type": "done",
             "mode": request.mode,

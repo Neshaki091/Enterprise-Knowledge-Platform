@@ -93,8 +93,16 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-gemini-embedding-001}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-786}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-10}
+      EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-3}
       EMBEDDING_API_URL: ${EMBEDDING_API_URL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      # FAISS IVF-PQ: tự nâng cấp khi vượt ngưỡng; xem backend/app/services/faiss_service.py
+      FAISS_IVF_MIN_VECTORS: ${FAISS_IVF_MIN_VECTORS:-20000}
+      FAISS_PQ_M: ${FAISS_PQ_M:-24}
+      FAISS_PQ_NBITS: ${FAISS_PQ_NBITS:-8}
+      FAISS_IVF_NLIST_MAX: ${FAISS_IVF_NLIST_MAX:-1024}
+      FAISS_IVF_NPROBE: ${FAISS_IVF_NPROBE:-32}
+      FAISS_PQ_TRAIN_MAX: ${FAISS_PQ_TRAIN_MAX:-30000}
     volumes:
       - faiss_storage:/app/backend/storage/indexes
     # Không publish trực tiếp ra host: mọi traffic đi qua Nginx (80/443).

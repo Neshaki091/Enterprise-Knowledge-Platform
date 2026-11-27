@@ -7,6 +7,7 @@ Tuân thủ nghiêm ngặt:
 - SEC-004: Chặn BOLA - Mọi thao tác đều bắt buộc có tenant_id từ TenantContext.
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -92,9 +93,9 @@ class DocumentService:
                         "Vui lòng xóa bớt tài liệu cũ hoặc nâng cấp gói dịch vụ.",
                     )
 
-        # 1. Tính mã băm SHA-256
+        # 1. Tính mã băm SHA-256 (CPU-bound -> thread)
         file_size = len(file_bytes)
-        file_hash = calculate_sha256(file_bytes)
+        file_hash = await asyncio.to_thread(calculate_sha256, file_bytes)
 
         # 2. Kiểm tra trùng lặp mã băm trong cùng Tenant
         dup_query = select(Document).where(
@@ -108,8 +109,10 @@ class DocumentService:
                 detail=f"Tài liệu '{file_name}' đã tồn tại trong doanh nghiệp của bạn (Trùng mã băm SHA-256: {file_hash[:12]}...)",
             )
 
-        # 3. Bóc tách văn bản sạch
-        raw_text, meta = extract_document_content(file_name, file_bytes, content_type)
+        # 3. Bóc tách văn bản sạch (CPU-bound: chạy trong thread để không chặn event loop)
+        raw_text, meta = await asyncio.to_thread(
+            extract_document_content, file_name, file_bytes, content_type
+        )
         if not raw_text.strip():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -119,7 +122,7 @@ class DocumentService:
         # 4. Hủy buffer nhị phân khỏi RAM (Zero Raw Storage)
         del file_bytes
 
-        total_tokens = estimate_tokens(raw_text)
+        total_tokens = await asyncio.to_thread(estimate_tokens, raw_text)
 
         # 5. Khởi tạo Document Entity
         doc = Document(
@@ -139,8 +142,8 @@ class DocumentService:
         db.add(doc)
         await db.flush()
 
-        # 6. Thuật toán phân đoạn phân cấp (Hierarchical Chunking)
-        parent_raw_list = hierarchical_chunk(raw_text)
+        # 6. Thuật toán phân đoạn phân cấp (Hierarchical Chunking) - CPU-bound -> thread pool
+        parent_raw_list = await asyncio.to_thread(hierarchical_chunk, raw_text)
         created_child_chunks: List[DocumentChildChunk] = []
         contextual_embed_texts: List[str] = []
 
@@ -246,21 +249,44 @@ class DocumentService:
             .order_by(Document.created_at.desc())
             .offset(skip)
             .limit(limit)
-            .options(
-                selectinload(Document.parent_chunks),
-                selectinload(Document.child_chunks)
-            )
         )
         query = apply_document_department_scope(query, Document.department_id, allowed_department_ids)
-        res = await db.execute(query)
-        docs = res.scalars().all()
+        docs = (await db.execute(query)).scalars().all()
+        if not docs:
+            return []
 
-        results = []
-        for doc in docs:
-            p_count = len(doc.parent_chunks)
-            c_count = len(doc.child_chunks)
-            results.append((doc, p_count, c_count))
-        return results
+        # Đếm chunk bằng aggregate trên đúng các document_id của trang hiện tại,
+        # thay vì selectinload toàn bộ nội dung Parent/Child rồi len() trong Python.
+        doc_ids = [doc.id for doc in docs]
+        parent_counts = dict(
+            (
+                await db.execute(
+                    select(DocumentParentChunk.document_id, func.count(DocumentParentChunk.id))
+                    .where(
+                        DocumentParentChunk.tenant_id == tenant_id,
+                        DocumentParentChunk.document_id.in_(doc_ids),
+                    )
+                    .group_by(DocumentParentChunk.document_id)
+                )
+            ).all()
+        )
+        child_counts = dict(
+            (
+                await db.execute(
+                    select(DocumentChildChunk.document_id, func.count(DocumentChildChunk.id))
+                    .where(
+                        DocumentChildChunk.tenant_id == tenant_id,
+                        DocumentChildChunk.document_id.in_(doc_ids),
+                    )
+                    .group_by(DocumentChildChunk.document_id)
+                )
+            ).all()
+        )
+
+        return [
+            (doc, int(parent_counts.get(doc.id, 0)), int(child_counts.get(doc.id, 0)))
+            for doc in docs
+        ]
 
     @staticmethod
     async def get_document(

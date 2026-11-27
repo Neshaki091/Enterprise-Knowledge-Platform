@@ -298,7 +298,8 @@ class ExternalDBService:
         safe_sql = cls.validate_readonly_sql(sql_query, allowed_tables)
         dsn = cls.decrypt_dsn(connector.encrypted_dsn, connector.encryption_salt, tenant_id, tenant_secret)
 
-        ext_engine = create_async_engine(dsn, echo=False, pool_pre_ping=True)
+        connect_args: Dict[str, Any] = {"statement_cache_size": 0} if "asyncpg" in dsn else {}
+        ext_engine = create_async_engine(dsn, echo=False, pool_pre_ping=True, connect_args=connect_args)
         try:
             async with ext_engine.connect() as conn:
                 res = await conn.execute(text(safe_sql))

@@ -8,6 +8,7 @@ Quy trình:
 4. LLM Generation: Gemma 4 26B suy luận có grounding và trích dẫn chứng cứ.
 """
 
+import asyncio
 import time
 import uuid
 from typing import Dict, Any, List
@@ -89,8 +90,9 @@ class ChatService:
             allowed_department_ids=allowed_departments,
         )
 
-        # 3. LỌC VÀ NÉN NGỮ CẢNH 3 TẦNG (Context Filtering Pipeline - Tối ưu trần 16K TPM)
-        filtered_context, comp_stats = ContextFilterPipeline.filter_and_compress(
+        # 3. LỌC VÀ NÉN NGỮ CẢNH 3 TẦNG (CPU-bound -> thread, không chặn event loop)
+        filtered_context, comp_stats = await asyncio.to_thread(
+            ContextFilterPipeline.filter_and_compress,
             query=request.query,
             candidates=search_res.results,
             max_chunks=min(request.top_k, 3),

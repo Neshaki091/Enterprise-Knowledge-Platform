@@ -24,7 +24,7 @@ class MCPServer:
 
     PROTOCOL_VERSION = "2024-11-05"
     SERVER_NAME = "enterprise-knowledge-mcp"
-    SERVER_VERSION = "2.1.0"
+    SERVER_VERSION = "2.3.2"
 
     # Định nghĩa danh sách các Tools mà MCP Server cung cấp cho AI Agent
     TOOLS_REGISTRY = [

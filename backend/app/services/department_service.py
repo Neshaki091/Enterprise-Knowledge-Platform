@@ -4,6 +4,7 @@ Service Layer quản lý Phòng ban (Departments) và Thành viên Doanh nghiệ
 Đảm bảo cô lập chặt chẽ theo tenant_id (SEC-003, SEC-004).
 """
 
+import asyncio
 import uuid
 from typing import List
 from fastapi import HTTPException, status
@@ -109,7 +110,7 @@ class DepartmentService:
         if not user:
             user = User(
                 email=data.email,
-                hashed_password=hash_password(data.password),
+                hashed_password=await asyncio.to_thread(hash_password, data.password),
                 full_name=data.full_name,
                 is_active=True,
                 is_superuser=False,

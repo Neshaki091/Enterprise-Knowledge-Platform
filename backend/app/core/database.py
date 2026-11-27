@@ -115,9 +115,13 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
+            # SSE có thể đã đóng session sớm để trả connection về pool trước khi stream LLM;
+            # chỉ commit khi session còn transaction mở, tránh mở lại connection vô ích.
+            if session.in_transaction():
+                await session.commit()
         except Exception:
             await session.rollback()
+            raise
             raise
         finally:
             await session.close()

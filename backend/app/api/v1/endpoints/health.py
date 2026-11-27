@@ -52,7 +52,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         "embedding_real_configured": bool(settings.EMBEDDING_API_URL and settings.effective_embedding_api_key),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "service": "Enterprise AI Knowledge Platform API",
-        "version": "2.1.0",
+        "version": "2.3.2",
     }
 
     if not db_connected:

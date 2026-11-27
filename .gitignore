@@ -26,6 +26,8 @@ wheels/
 # Virtual Environment
 .env
 .env.local
+.env_vu
+phase3_ux_sim/.env_*
 frontend/.env.production
 frontend/.env.production.local
 
@@ -77,6 +79,9 @@ endpoint_test/ENDPOINT_TEST_REPORT.md
 *.pem
 *.key
 *.log
+phase3_ux_sim/_asgi_faiss/
+phase3_ux_sim/reports/
+phase3_ux_sim/*.db
 
 # Node / frontend build
 node_modules/

@@ -13,11 +13,13 @@ import re
 import asyncio
 import hashlib
 import logging
-from typing import List, Optional
+from collections import OrderedDict
+from typing import List, Optional, Tuple
 import httpx
 import numpy as np
 from fastapi import HTTPException, status
 from app.core.config import settings
+from app.core.http_client import acquire_http_client
 from app.services.quota_service import quota_manager
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,28 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     """Sinh vector nhúng (Embedding) chuẩn hóa L2 cho Child Chunks và Search Query."""
+
+    # LRU cache cho embedding câu hỏi tra cứu (không cache tài liệu ingestion).
+    # 256 entry x 786 chiều float32 ~= 0,8 MB RAM, đổi lại tiết kiệm 300-800ms
+    # và quota Google cho các câu hỏi lặp lại.
+    _QUERY_CACHE_MAX: int = 256
+    _query_cache: "OrderedDict[Tuple[str, str, int, str, str], np.ndarray]" = OrderedDict()
+
+    @classmethod
+    def clear_query_cache(cls) -> None:
+        """Xóa cache embedding câu hỏi (dùng cho kiểm thử hoặc khi đổi model)."""
+        cls._query_cache.clear()
+
+    @classmethod
+    def _query_cache_key(cls, text: str, task_type: str, dim: int) -> Tuple[str, str, int, str, str]:
+        """Khóa cache gồm provider/model/số chiều để tự vô hiệu khi đổi cấu hình."""
+        return (
+            settings.EMBEDDING_PROVIDER,
+            settings.EMBEDDING_MODEL,
+            dim,
+            task_type,
+            text.strip(),
+        )
 
     @classmethod
     def get_dimension(cls) -> int:
@@ -122,8 +146,8 @@ class EmbeddingService:
         last_exc: Optional[Exception] = None
         for attempt in range(4):
             try:
-                async with httpx.AsyncClient(timeout=30.0, transport=transport) as http_client:
-                    resp = await http_client.post(endpoint, headers=headers, json=payload)
+                async with acquire_http_client(transport=transport) as http_client:
+                    resp = await http_client.post(endpoint, headers=headers, json=payload, timeout=30.0)
                     if resp.status_code in (429, 502, 503, 504):
                         quota_manager.record_upstream_call("embedding", status_code=resp.status_code, error_summary=resp.text[:120])
                         if attempt < 3:
@@ -163,20 +187,32 @@ class EmbeddingService:
         task_type: str = "RETRIEVAL_DOCUMENT",
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> np.ndarray:
-        """Chia danh sách văn bản thành các batch tối đa 10 chunks/request để tối ưu API và tránh timeout."""
+        """Chia danh sách văn bản thành các batch tối đa 10 chunks và gọi SONG SONG có giới hạn."""
         dim = cls.get_dimension()
         batch_size = max(1, min(int(settings.EMBEDDING_BATCH_SIZE), 10))
         batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+        if not batches:
+            return np.empty((0, dim), dtype=np.float32)
 
-        results = []
-        for batch in batches:
-            batch_vecs = await cls._call_single_batch(
-                batch_texts=batch,
-                task_type=task_type,
-                dim=dim,
-                transport=transport,
-            )
-            results.append(batch_vecs)
+        concurrency = max(1, min(int(settings.EMBEDDING_MAX_CONCURRENCY), len(batches)))
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _run_batch(batch: List[str]) -> np.ndarray:
+            async with semaphore:
+                return await cls._call_single_batch(
+                    batch_texts=batch,
+                    task_type=task_type,
+                    dim=dim,
+                    transport=transport,
+                )
+
+        results = await asyncio.gather(
+            *(_run_batch(batch) for batch in batches),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
         return np.vstack(results).astype(np.float32)
 
@@ -187,10 +223,26 @@ class EmbeddingService:
         task_type: str = "RETRIEVAL_QUERY",
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> np.ndarray:
-        """Sinh vector cho một truy vấn tìm kiếm hoặc đoạn văn bản đơn lẻ."""
+        """Sinh vector cho một truy vấn tìm kiếm hoặc đoạn văn bản đơn lẻ (có LRU cache cho query)."""
         if settings.EMBEDDING_API_URL:
+            dim = cls.get_dimension()
+            cache_key: Optional[Tuple[str, str, int, str, str]] = None
+            if transport is None and task_type == "RETRIEVAL_QUERY":
+                cache_key = cls._query_cache_key(text, task_type, dim)
+                cached = cls._query_cache.get(cache_key)
+                if cached is not None:
+                    cls._query_cache.move_to_end(cache_key)
+                    return cached.copy()
+
             arr = await cls._call_remote_embeddings([text], task_type=task_type, transport=transport)
-            return arr[0]
+            vector = arr[0]
+
+            if cache_key is not None:
+                cls._query_cache[cache_key] = vector.copy()
+                cls._query_cache.move_to_end(cache_key)
+                while len(cls._query_cache) > cls._QUERY_CACHE_MAX:
+                    cls._query_cache.popitem(last=False)
+            return vector
         return cls._generate_deterministic_vector(text, cls.get_dimension())
 
     @classmethod

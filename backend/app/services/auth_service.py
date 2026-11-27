@@ -5,6 +5,7 @@ Triển khai cơ chế xoay vòng Refresh Token (Token Rotation) và Phát hiệ
 Tuân thủ SEC-001, SEC-004, SEC-005.
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -71,7 +72,7 @@ class AuthService:
         # 4. Tạo User mới
         new_user = User(
             email=data.email,
-            hashed_password=hash_password(data.password),
+            hashed_password=await asyncio.to_thread(hash_password, data.password),
             full_name=data.full_name,
             is_active=True,
             is_superuser=False,
@@ -103,7 +104,15 @@ class AuthService:
         user_res = await db.execute(select(User).where(User.email == data.email))
         user = user_res.scalar_one_or_none()
 
-        if not user or not verify_password(data.password, user.hashed_password):
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Email hoặc mật khẩu không chính xác",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # Bcrypt là CPU-bound (~200ms); chạy trong thread để không chặn event loop
+        # của worker duy nhất khi có nhiều người đăng nhập đồng thời.
+        if not await asyncio.to_thread(verify_password, data.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Email hoặc mật khẩu không chính xác",

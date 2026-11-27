@@ -21,7 +21,7 @@ async def test_health_check_endpoint(client: AsyncClient):
     assert isinstance(data["llm_real_configured"], bool)
     assert isinstance(data["embedding_real_configured"], bool)
     assert "timestamp_utc" in data
-    assert data["version"] == "2.1.0"
+    assert data["version"] == "2.3.2"
 
 
 @pytest.mark.asyncio

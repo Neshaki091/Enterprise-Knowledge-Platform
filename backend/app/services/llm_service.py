@@ -16,6 +16,7 @@ from typing import Tuple, AsyncGenerator, Dict, Any, Optional, List
 import httpx
 from fastapi import HTTPException, status
 from app.core.config import settings
+from app.core.http_client import acquire_http_client
 from app.services.prompt_service import PromptService
 from app.services.quota_service import quota_manager
 
@@ -159,8 +160,8 @@ class LLMService:
 
             for attempt in range(4):
                 try:
-                    async with httpx.AsyncClient(timeout=45.0, transport=transport) as http_client:
-                        resp = await http_client.post(endpoint, headers=headers, json=payload)
+                    async with acquire_http_client(transport=transport) as http_client:
+                        resp = await http_client.post(endpoint, headers=headers, json=payload, timeout=45.0)
                         if resp.status_code in (429, 502, 503, 504):
                             quota_manager.record_upstream_call("llm", status_code=resp.status_code, error_summary=resp.text[:120])
                             if attempt < 3:
@@ -235,8 +236,8 @@ class LLMService:
 
             for attempt in range(4):
                 try:
-                    async with httpx.AsyncClient(timeout=60.0, transport=transport) as http_client:
-                        async with http_client.stream("POST", endpoint, headers=headers, json=payload) as resp:
+                    async with acquire_http_client(transport=transport) as http_client:
+                        async with http_client.stream("POST", endpoint, headers=headers, json=payload, timeout=60.0) as resp:
                             if resp.status_code in (429, 502, 503, 504):
                                 quota_manager.record_upstream_call("llm", status_code=resp.status_code, error_summary=f"Stream HTTP {resp.status_code}")
                                 if attempt < 3:

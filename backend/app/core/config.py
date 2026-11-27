@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # FAISS Storage
     FAISS_INDEX_STORAGE_PATH: str = "backend/storage/indexes"
 
+    # FAISS IVF-PQ: dưới ngưỡng dùng FlatIP (chính xác); vượt ngưỡng tự nâng cấp
+    # sang IVF + Product Quantization để giảm hàng chục lần RAM/đĩa trên e2-micro.
+    FAISS_IVF_MIN_VECTORS: int = Field(default=20000, ge=100)
+    FAISS_PQ_M: int = Field(default=24, ge=1)
+    FAISS_PQ_NBITS: int = Field(default=8, ge=4, le=16)
+    FAISS_IVF_NLIST_MAX: int = Field(default=1024, ge=4)
+    FAISS_IVF_NPROBE: int = Field(default=32, ge=1)
+    FAISS_PQ_TRAIN_MAX: int = Field(default=30000, ge=1000)
+
     # Google AI Studio Unified Key (dùng chung cho cả Embedding lẫn Gemma LLM)
     GOOGLE_API_KEY: Optional[str] = Field(
         default=None,
@@ -55,6 +64,7 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSION: int = 786
     EMBEDDING_MODEL: str = "gemini-embedding-001"
     EMBEDDING_BATCH_SIZE: int = Field(default=10, ge=1, le=10)
+    EMBEDDING_MAX_CONCURRENCY: int = Field(default=3, ge=1, le=5)
     EMBEDDING_API_URL: Optional[str] = None
     EMBEDDING_API_KEY: Optional[str] = None
 
