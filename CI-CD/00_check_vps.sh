@@ -17,8 +17,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 require_vps_target
 
-say "Kiểm tra VPS ${VPS_USER}@${VPS_HOST}:${VPS_APP_DIR} (dùng SSH hiện có của bạn)"
-vps_ssh_bootstrap "VPS_APP_DIR='${VPS_APP_DIR}' bash -s" <<'REMOTE'
+SSH_MODE="bootstrap"
+if [ -f "${VPS_SSH_KEY:-}" ] && [ -f "${VPS_KNOWN_HOSTS:-}" ]; then
+    if vps_ssh "echo KEY_OK" >/dev/null 2>&1; then
+        SSH_MODE="pinned"
+    fi
+fi
+
+remote_ssh() {
+    if [ "$SSH_MODE" = "pinned" ]; then
+        vps_ssh "$@"
+    else
+        vps_ssh_bootstrap "$@"
+    fi
+}
+
+say "Kiểm tra VPS ${VPS_USER}@${VPS_HOST}:${VPS_APP_DIR} (SSH ${SSH_MODE})"
+remote_ssh "VPS_APP_DIR='${VPS_APP_DIR}' bash -s" <<'REMOTE'
 set -Eeuo pipefail
 export GIT_TERMINAL_PROMPT=0
 cd "$VPS_APP_DIR"

@@ -28,17 +28,6 @@ fi
 chmod 600 "$VPS_SSH_KEY" 2>/dev/null || true
 chmod 644 "$VPS_SSH_KEY.pub" 2>/dev/null || true
 
-say "Cài public key lên VPS (thử bằng key/agent SSH hiện có của bạn)"
-if ! cat "$VPS_SSH_KEY.pub" | ssh -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"; then
-    if command -v ssh-copy-id >/dev/null 2>&1; then
-        warn "Không cài tự động được; thử ssh-copy-id (sẽ hỏi mật khẩu VPS)."
-        ssh-copy-id -i "$VPS_SSH_KEY.pub" "$VPS_USER@$VPS_HOST"
-    else
-        die "Không cài được public key. Thêm thủ công nội dung $VPS_SSH_KEY.pub vào ~/.ssh/authorized_keys trên VPS."
-    fi
-fi
-
 say "Quét host key vào $VPS_KNOWN_HOSTS"
 mkdir -p "$(dirname "$VPS_KNOWN_HOSTS")"
 ssh-keyscan -H "$VPS_HOST" > "$VPS_KNOWN_HOSTS" 2>/dev/null
@@ -48,10 +37,46 @@ chmod 600 "$VPS_KNOWN_HOSTS"
 say "Fingerprint đang pin — so khớp trên VPS bằng: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
 ssh-keygen -lf "$VPS_KNOWN_HOSTS" || true
 
-say "Test SSH pin + sudo không mật khẩu"
-if ! vps_ssh "echo KEY_OK && sudo -n true && echo SUDO_OK"; then
-    die "Test thất bại. 'Host key verification failed' → so lại fingerprint; 'sudo' lỗi → cấu hình NOPASSWD."
+key_ok() {
+    vps_ssh "echo KEY_OK" >/dev/null 2>&1
+}
+
+if ! key_ok; then
+    say "Deploy key chưa được cài; thử cài tự động bằng SSH hiện có"
+    if ! cat "$VPS_SSH_KEY.pub" | ssh -o BatchMode=yes -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"; then
+        if command -v ssh-copy-id >/dev/null 2>&1; then
+            warn "Thử ssh-copy-id (có thể hỏi mật khẩu VPS)."
+            ssh-copy-id -i "$VPS_SSH_KEY.pub" "$VPS_USER@$VPS_HOST" || true
+        fi
+    fi
 fi
+
+if ! key_ok; then
+    cat >&2 <<EOF
+
+[LỖI] Chưa đăng nhập được bằng deploy key.
+
+Máy local không có SSH key để tự cài (ví dụ bạn chỉ vào VPS bằng GCP Console
+browser SSH). Mở terminal browser tới VPS, dán 3 lệnh sau:
+
+  mkdir -p ~/.ssh && chmod 700 ~/.ssh
+  echo '$(cat "$VPS_SSH_KEY.pub")' >> ~/.ssh/authorized_keys
+  chmod 600 ~/.ssh/authorized_keys
+
+Sau đó chạy lại: bash CI-CD/01_setup_ssh.sh
+
+Nếu VPS dùng OS Login, key thêm vào authorized_keys có thể không được dùng;
+khi đó thêm public key qua GCP metadata/OS Login rồi chạy lại script.
+EOF
+    exit 1
+fi
+
+say "Test sudo không mật khẩu"
+if ! vps_ssh "sudo -n true"; then
+    die "Key đăng nhập OK nhưng sudo cần mật khẩu. Cấu hình NOPASSWD cho $VPS_USER."
+fi
+echo "KEY_OK / SUDO_OK"
 
 say "Hoàn tất."
 say "  private key : $VPS_SSH_KEY"

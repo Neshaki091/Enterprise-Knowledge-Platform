@@ -231,6 +231,12 @@ credential hết hạn, fail ngay. Đây là lý do `00_check_vps.sh` chạy pul
 Lệnh remote được truyền qua stdin (`bash -s`), không nhét chuỗi dài vào argv; tag
 và đường dẫn đã được validate charset trước khi nội suy, tránh shell injection.
 
+**Trường hợp chỉ có GCP browser SSH**: máy local không có private key nào, nên
+`ssh user@host` từ Git Bash sẽ `Permission denied (publickey)`. `01_setup_ssh.sh`
+giải quyết bằng cách tạo key trước, in sẵn lệnh thêm public key để dán vào terminal
+browser, rồi test lại. Đây cũng là lý do script tạo `known_hosts` **trước** khi thử
+cài key: dù bước cài tự động thất bại, bạn vẫn có host key đã pin để dùng tiếp.
+
 ---
 
 ## 9. Mô hình mối đe doạ và biện pháp

@@ -119,6 +119,12 @@ bash CI-CD/02_github_secrets.sh     # nhập Docker Hub token tại prompt
 bash CI-CD/03_check_ci.sh --watch
 ```
 
+> Nếu `00` báo `Permission denied (publickey)` — thường gặp khi bạn chỉ vào VPS
+> bằng GCP Console **browser SSH**, máy local không có private key:
+> chạy `01` trước. Script tạo key và in sẵn một lệnh `echo 'ssh-ed25519 ...' >>
+> ~/.ssh/authorized_keys`; mở browser SSH, dán 3 lệnh đó, rồi chạy lại `01`.
+> Khi `01` báo `KEY_OK / SUDO_OK` thì quay lại `00`.
+
 `02` đặt:
 
 | Nơi lưu | Tên |
@@ -227,7 +233,7 @@ ngược (expand/contract) để image cũ chạy được trên schema mới.
 
 | Triệu chứng | Nguyên nhân | Xử lý |
 |---|---|---|
-| `Permission denied (publickey)` | Key chưa vào `authorized_keys`, sai user | Chạy lại `01`; thêm public key thủ công |
+| `Permission denied (publickey)` | Key chưa vào `authorized_keys`, sai user, hoặc bạn chỉ có browser SSH | Chạy `01`, dán public key in ra vào terminal browser SSH, chạy lại `01` rồi `00` |
 | `Host key verification failed` | `known_hosts` pin sai host hoặc host key đổi | Chạy lại `01`; so fingerprint trước khi chấp nhận |
 | `sudo: a password is required` | Thiếu NOPASSWD | Cấu hình sudoers như mục 2 |
 | `could not read Username` / `Authentication failed` | Credential git trên VPS hết hạn | Làm mới PAT/credential; test `GIT_TERMINAL_PROMPT=0 git pull` |
