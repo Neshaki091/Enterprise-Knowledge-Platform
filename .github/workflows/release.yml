@@ -1,0 +1,247 @@
+# ==============================================================================
+# Release pipeline: tag v* -> test -> build/push Docker Hub -> duyệt -> SSH deploy.
+#
+# Phát hành:
+#   git tag v2.3.3
+#   git push origin v2.3.3
+#
+# Điều kiện một lần (xem deploy/registry/README.md, mục "CI/CD"):
+#   Environment "production" có Required reviewers.
+#   Secrets (repository, dùng cho publish):
+#     DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (read/write)
+#   Secrets (environment production, dùng cho deploy):
+#     VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_KNOWN_HOSTS
+#   Variables (environment production):
+#     VPS_APP_DIR        vd /opt/SaaS_Chatbot_platform
+#     PUBLIC_HEALTH_URL  vd https://ekp-demo.duckdns.org/health (tùy chọn)
+#
+# VPS không build: chỉ git pull + deploy_vps.sh (pull image, health gate, rollback).
+# ==============================================================================
+name: Release & Deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag phát hành đã có trên GitHub (vd v2.3.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+env:
+  DOCKER_IMAGE_PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+
+jobs:
+  meta:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      git_ref: ${{ steps.tag.outputs.git_ref }}
+    steps:
+      - name: Validate tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            RAW="$INPUT_TAG"
+          else
+            RAW="$GITHUB_REF_NAME"
+          fi
+          case "$RAW" in
+            v*) ;;
+            *) echo "::error::Tag phải bắt đầu bằng 'v' (vd v2.3.3), nhận: $RAW"; exit 1 ;;
+          esac
+          TAG="${RAW#v}"
+          case "$TAG" in
+            ''|latest) echo "::error::Tag không hợp lệ: $RAW"; exit 1 ;;
+            *[!A-Za-z0-9_.-]*) echo "::error::Tag chứa ký tự không hợp lệ: $RAW"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "git_ref=refs/tags/v$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: v$TAG"
+
+  verify:
+    name: Backend tests + frontend build
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.git_ref }}
+
+      - name: Verify version matches tag
+        env:
+          RELEASE_TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          grep -Fq "version=\"${RELEASE_TAG}\"" backend/app/main.py \
+            || { echo "::error::backend/app/main.py chưa đặt version=\"${RELEASE_TAG}\""; exit 1; }
+          grep -Fq "\"version\": \"${RELEASE_TAG}\"" backend/app/api/v1/endpoints/health.py \
+            || { echo "::error::health.py chưa đặt \"version\": \"${RELEASE_TAG}\""; exit 1; }
+          grep -Fq "SERVER_VERSION = \"${RELEASE_TAG}\"" backend/app/mcp/server.py \
+            || { echo "::error::mcp/server.py chưa đặt SERVER_VERSION = \"${RELEASE_TAG}\""; exit 1; }
+          echo "Version nhất quán ở main.py, health.py, mcp/server.py: ${RELEASE_TAG}"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt aiosqlite greenlet
+
+      - name: Run pytest
+        run: python -m pytest backend/tests -q
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+  publish:
+    name: Build & push images
+    needs: [meta, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.git_ref }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push
+        env:
+          IMAGE_TAG: ${{ needs.meta.outputs.tag }}
+        run: bash deploy/registry/build_and_push.sh
+
+      - name: Record image digests
+        env:
+          IMAGE_TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## Images pushed"
+            echo ""
+            for name in backend nginx; do
+              ref="${DOCKER_IMAGE_PREFIX}/ekp-${name}:${IMAGE_TAG}"
+              echo "- \`$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy production VPS
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+    steps:
+      - name: Validate deploy inputs
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ vars.VPS_APP_DIR }}
+        run: |
+          set -Eeuo pipefail
+          [ -n "$VPS_HOST" ] || { echo "::error::Thiếu secret VPS_HOST"; exit 1; }
+          [ -n "$VPS_USER" ] || { echo "::error::Thiếu secret VPS_USER"; exit 1; }
+          case "$VPS_APP_DIR" in
+            /*) ;;
+            *) echo "::error::Variable VPS_APP_DIR phải là đường dẫn tuyệt đối, nhận: '$VPS_APP_DIR'"; exit 1 ;;
+          esac
+          case "$VPS_APP_DIR" in
+            *[!A-Za-z0-9/._-]*) echo "::error::VPS_APP_DIR chứa ký tự không hợp lệ: '$VPS_APP_DIR'"; exit 1 ;;
+          esac
+
+      - name: Prepare SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          test -n "$VPS_SSH_KEY" || { echo "::error::Thiếu secret VPS_SSH_KEY"; exit 1; }
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          test -s ~/.ssh/known_hosts || { echo "::error::Thiếu secret VPS_KNOWN_HOSTS (ssh-keyscan)"; exit 1; }
+
+      - name: Pull code and deploy on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ vars.VPS_APP_DIR }}
+          RELEASE_TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/id_ed25519 \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o ConnectTimeout=15 \
+              "$VPS_USER@$VPS_HOST" \
+              "VPS_APP_DIR='$VPS_APP_DIR' IMAGE_TAG='$RELEASE_TAG' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          export GIT_TERMINAL_PROMPT=0
+          cd "$VPS_APP_DIR"
+          sudo -n true || { echo "sudo cần mật khẩu trên VPS; cấu hình NOPASSWD cho deploy" >&2; exit 1; }
+          git pull --ff-only
+          test -f .env || { echo "Thiếu .env trên VPS" >&2; exit 1; }
+          if sudo grep -q '^IMAGE_TAG=' .env; then
+              sudo sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${IMAGE_TAG}/" .env
+          else
+              printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" | sudo tee -a .env >/dev/null
+          fi
+          sudo chmod 600 .env
+          sudo bash deploy/registry/deploy_vps.sh
+          REMOTE
+
+      - name: Verify public health endpoint
+        if: vars.PUBLIC_HEALTH_URL != ''
+        env:
+          PUBLIC_HEALTH_URL: ${{ vars.PUBLIC_HEALTH_URL }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 12); do
+            if body="$(curl -fsS --max-time 5 "$PUBLIC_HEALTH_URL" 2>/dev/null)" \
+               && printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+              echo "Public health OK: $body"
+              exit 0
+            fi
+            echo "Lần ${attempt}/12: chưa healthy, thử lại sau 5s..."
+            sleep 5
+          done
+          echo "::error::Public health chưa healthy sau 60s: $PUBLIC_HEALTH_URL"
+          exit 1
