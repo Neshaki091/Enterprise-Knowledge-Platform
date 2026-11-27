@@ -6,4 +6,4 @@ FastAPI, health endpoint, MCP server và test đều import `APP_VERSION`, còn 
 kiểm tra hằng số này khớp với git tag `v*` trước khi build/push image.
 """
 
-APP_VERSION = "2.3.2"
+APP_VERSION = "2.3.3"
