@@ -245,8 +245,9 @@ Rollback image **không** rollback migration CSDL — migration phải tương t
 
 ## 5b. CI/CD hiện tại: build local → Docker Hub → deploy
 
-Repo dùng **đường nhẹ**, không cần GitHub Actions/secrets/environment. VPS vẫn chỉ
-pull image, không build.
+Đường deploy không cần GitHub Actions/secrets/environment; bước build có thể chạy
+local hoặc trên GitHub runner (`build.yml`, tuỳ chọn, cần Docker Hub token). VPS
+vẫn chỉ pull image, không build.
 
 Luồng:
 
@@ -272,6 +273,11 @@ docker login -u <DOCKERHUB_USERNAME>
 ```
 
 Cấu hình nằm trong `CI-CD/config.sh` (gitignore). Chi tiết: [CI-CD/README.md](../../CI-CD/README.md).
+
+Nếu muốn build trên GitHub thay vì máy local: tạo secret `DOCKERHUB_TOKEN` (Read &
+Write) trong repo, chạy workflow **Build & Push Images**, rồi deploy bằng
+`bash CI-CD/07_deploy_now.sh <tag>` (không cần `--build`). Workflow từ chối tag
+`latest`, tag không khớp `APP_VERSION`, hoặc tag đã tồn tại trên Docker Hub.
 
 ### Phát hành
 

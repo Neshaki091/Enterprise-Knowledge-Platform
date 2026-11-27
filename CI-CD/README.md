@@ -19,9 +19,9 @@ Nguyên tắc cốt lõi: **VPS không build**. Image được build trên máy 
 `git pull` code/config và pull image từ Docker Hub. Mọi lần deploy đều đi qua
 `deploy_vps.sh` nên vẫn có health gate, auto-rollback và prune an toàn.
 
-> Đường GitHub Actions đầy đủ (tag `v*` → test → build → duyệt → deploy) đã được
-> lược bỏ khỏi repo để giảm phức tạp. Nếu cần lại, xem lịch sử git của
-> `.github/workflows/release.yml` và các script `02`–`04`.
+> Đường deploy đầy đủ qua GitHub Actions (approval → SSH) đã được lược bỏ khỏi
+> repo để giảm phức tạp. Bước **build/push** có thể chạy trên GitHub bằng
+> `.github/workflows/build.yml` (tuỳ chọn, xem mục 6b); deploy vẫn từ máy local.
 
 ---
 
@@ -39,6 +39,7 @@ Nguyên tắc cốt lõi: **VPS không build**. Image được build trên máy 
 | `deploy/registry/deploy_vps.sh` | Pull image, recreate stack, health gate, auto-rollback, prune |
 | `deploy/registry/build_and_push.sh` | Build/push `ekp-backend` + `ekp-nginx` (`linux/amd64`) |
 | `.github/workflows/ci.yml` | CI tuỳ chọn: pytest + build frontend khi push/PR (không cần secrets) |
+| `.github/workflows/build.yml` | Build/push image trên GitHub runner (tuỳ chọn, cần 1 secret) |
 
 ---
 
@@ -196,6 +197,49 @@ Quy tắc:
 
 ---
 
+## 6b. Build trên GitHub (tuỳ chọn, khuyến nghị)
+
+Mục đích: máy local không cần bật Docker/build; GitHub runner build/push image,
+máy local chỉ ra lệnh deploy. Không cần đưa VPS key/host lên GitHub.
+
+**Chuẩn bị một lần:**
+
+0. Repo → Settings → Actions → General: bật **Allow all actions** (nếu đang tắt).
+1. Docker Hub → Account Settings → Security → New Access Token → quyền
+   **Read & Write**; copy token (chỉ hiện một lần).
+2. GitHub repo → Settings → Secrets and variables → Actions → New repository
+   secret:
+   - `DOCKERHUB_TOKEN` = token vừa tạo
+   - (tuỳ chọn) `DOCKERHUB_USERNAME` nếu username Docker Hub không phải `neshaki091`
+3. Không cần tạo secret VPS nào.
+
+**Phát hành:**
+
+```bash
+# 1) Bump APP_VERSION, commit, push main
+git add backend/app/core/version.py
+git commit -m "release: v2.3.3"
+git push origin main
+
+# 2) GitHub → Actions → "Build & Push Images" → Run workflow
+#    - branch: main
+#    - tag: để trống (tự đọc APP_VERSION) hoặc nhập 2.3.3
+#    Chờ workflow xanh; Summary có sẵn lệnh deploy.
+
+# 3) Deploy từ local (không cần --build, không cần Docker login)
+bash CI-CD/07_deploy_now.sh 2.3.3
+bash CI-CD/05_verify.sh
+```
+
+Workflow sẽ từ chối nếu tag là `latest`, không khớp `APP_VERSION`, hoặc tag đã
+tồn tại trên Docker Hub (tránh ghi đè image đã phát hành). Nó dùng lại
+`build_and_push.sh` nên vẫn build `linux/amd64` và push cả `:X.Y.Z` lẫn `:latest`.
+
+CI test (`ci.yml`) vẫn chạy độc lập khi push main. Có thể chạy CI trước, rồi chạy
+Build & Push, rồi deploy — ba bước tách biệt, không cần approval.
+
+---
+
 ## 7. Xác minh sau deploy
 
 ```bash
@@ -251,6 +295,7 @@ ngược (expand/contract) để image cũ chạy được trên schema mới.
 | `sudo: a password is required` | Thiếu NOPASSWD | Cấu hình sudoers như mục 2 |
 | `could not read Username` / `Authentication failed` | Credential git trên VPS hết hạn | Làm mới PAT/credential; test `GIT_TERMINAL_PROMPT=0 git pull` |
 | Docker Hub `unauthorized` / `insufficient_scope` | Chưa login hoặc token sai/thiếu quyền | `docker login -u neshaki091`; token Read & Write |
+| Workflow build fail: tag đã tồn tại / không khớp `APP_VERSION` / login fail | Chưa bump version, tag nhập sai, hoặc thiếu `DOCKERHUB_TOKEN` | Bump `APP_VERSION`; kiểm tra secret và log workflow |
 | `manifest unknown` | Sai `IMAGE_TAG` hoặc chưa push | Kiểm tra tag trên Docker Hub; build/push lại |
 | `exec format error` | Image build sai kiến trúc | Build lại với `PLATFORM=linux/amd64` |
 | Nginx `502` | Backend chưa healthy | `docker compose logs backend`; chờ migration xong |
@@ -287,5 +332,7 @@ curl -fsS https://hub.docker.com/v2/repositories/neshaki091/ekp-backend/tags/ | 
 
 Quy trình còn lại: bump `APP_VERSION` → commit → push main →
 `07_deploy_now.sh --build` → `05_verify.sh`.
+Nếu build trên GitHub: Actions → Build & Push Images → Run workflow →
+`07_deploy_now.sh <tag>` (không `--build`) → `05_verify.sh`.
 
 Chi tiết khái niệm và lý do thiết kế: xem [learn.md](learn.md).

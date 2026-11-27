@@ -1,0 +1,111 @@
+# ==============================================================================
+# Build Docker image trên GitHub runner và push lên Docker Hub.
+#
+# Chạy tay: Actions → "Build & Push Images" → Run workflow.
+#   - Để trống ô tag: dùng APP_VERSION trong backend/app/core/version.py.
+#   - Nhập tag: phải khớp APP_VERSION và chưa tồn tại trên Docker Hub.
+#
+# Không deploy. Sau khi workflow xanh, deploy từ máy local:
+#   bash CI-CD/07_deploy_now.sh <tag>
+#
+# Secret cần tạo (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_TOKEN  — Access Token quyền Read & Write (do bạn tự tạo)
+#
+# Username mặc định lấy từ vars.DOCKER_IMAGE_PREFIX hoặc "neshaki091";
+# có thể override bằng secret DOCKERHUB_USERNAME nếu cần.
+# Guard "tag đã tồn tại" dùng API Docker Hub public; với image private, guard
+# này có thể bỏ qua (API trả 401/404) — khi đó tự đảm bảo không ghi đè tag.
+# ==============================================================================
+name: Build & Push Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag image (để trống = đọc APP_VERSION; không dùng latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-images
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build backend + nginx
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve and validate tag
+        id: version
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG:-}"
+          if [ -z "$tag" ]; then
+            tag="$(sed -n 's/^APP_VERSION = "\([^"]*\)"[[:space:]]*$/\1/p' \
+              backend/app/core/version.py | tail -n 1)"
+          fi
+          [ -n "$tag" ] || { echo "::error::Không đọc được APP_VERSION"; exit 1; }
+          [ "$tag" != "latest" ] || { echo "::error::Không dùng tag latest"; exit 1; }
+          case "$tag" in
+            *[!A-Za-z0-9_.-]*)
+              echo "::error::Tag chứa ký tự không hợp lệ: $tag"; exit 1 ;;
+          esac
+          grep -Fq "APP_VERSION = \"$tag\"" backend/app/core/version.py \
+            || { echo "::error::APP_VERSION không khớp tag $tag — bump version trước"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "Sẽ build image tag: $tag"
+
+      - name: Refuse to overwrite an existing tag
+        env:
+          PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+        run: |
+          set -euo pipefail
+          for repo in ekp-backend ekp-nginx; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+              "https://hub.docker.com/v2/repositories/${PREFIX}/${repo}/tags/${IMAGE_TAG}" \
+              || true)"
+            if [ "$code" = "200" ]; then
+              echo "::error::Tag ${IMAGE_TAG} đã có trên ${PREFIX}/${repo}."
+              echo "::error::Hãy bump APP_VERSION (vd 2.3.3 → 2.3.4) rồi chạy lại."
+              exit 1
+            fi
+          done
+          echo "Tag ${IMAGE_TAG} chưa tồn tại — an toàn để build."
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          DOCKER_IMAGE_PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+        run: bash deploy/registry/build_and_push.sh
+
+      - name: Summary
+        env:
+          PREFIX: ${{ vars.DOCKER_IMAGE_PREFIX || 'neshaki091' }}
+        run: |
+          {
+            echo "### Đã push image"
+            echo ""
+            echo "- \`${PREFIX}/ekp-backend:${IMAGE_TAG}\`"
+            echo "- \`${PREFIX}/ekp-nginx:${IMAGE_TAG}\`"
+            echo ""
+            echo "Deploy từ máy local:"
+            echo '```bash'
+            echo "bash CI-CD/07_deploy_now.sh ${IMAGE_TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

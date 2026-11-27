@@ -5,9 +5,10 @@ hoạt động**, không chỉ các lệnh cần chạy. Đọc xong bạn có t
 trước câu hỏi kiểu: *Tại sao không build trên VPS? Tại sao pin host key? Rollback
 có mất dữ liệu không?*
 
-> Repo hiện dùng **đường nhẹ**: build/push từ máy local rồi SSH deploy. Đường
-> GitHub Actions đầy đủ đã được lược bỏ để giảm phức tạp; các khái niệm về
-> workflow/approval vẫn được nhắc ở mục 11 như một lựa chọn thay thế.
+> Repo hiện dùng **đường nhẹ**: build/push (local hoặc GitHub runner) rồi SSH
+> deploy. Pipeline deploy đầy đủ qua GitHub Actions (approval + SSH) đã được lược
+> bỏ để giảm phức tạp; các khái niệm về workflow/approval vẫn được nhắc ở mục 11
+> như một lựa chọn thay thế.
 
 ---
 
@@ -16,7 +17,9 @@ có mất dữ liệu không?*
 **CI (Continuous Integration)** là việc mỗi thay đổi code được tự động kiểm tra
 (test, build, lint) ngay khi đưa lên nhánh chung, để lỗi lộ ra sớm thay vì lúc deploy.
 Repo vẫn giữ `.github/workflows/ci.yml`: push/PR vào `main` sẽ chạy pytest và build
-frontend. Workflow này **không cần secrets** và không deploy.
+frontend. Workflow này **không cần secrets** và không deploy. Bước build Docker có
+thể chạy trên GitHub bằng `.github/workflows/build.yml` (chạy tay, cần Docker Hub
+token); xem mục 5.
 
 **CD (Continuous Delivery/Deployment)** là đưa artifact đã kiểm tra tới môi trường
 chạy. EKP chọn **Continuous Delivery**: pipeline chuẩn bị image bất biến, nhưng
@@ -54,12 +57,12 @@ build_and_push.sh
 ```
 
 Ba ranh giới tin cậy: **máy local** (giữ Docker credential + deploy key),
-**Docker Hub** (giữ artifact), **VPS** (chạy production). Không còn GitHub trong
-đường deploy; GitHub chỉ là nơi lưu source và chạy CI tuỳ chọn.
+**Docker Hub** (giữ artifact), **VPS** (chạy production). GitHub có thể chạy CI
+và build/push image (`build.yml`, tuỳ chọn), nhưng không nằm trong đường deploy.
 
-Đánh đổi so với pipeline trên cloud: ít thành phần hơn, không cần cấu hình
-secrets/environment, nhưng audit trail nằm ở terminal/VPS thay vì một trang web,
-và máy local trở thành mắt xích tin cậy quan trọng nhất.
+Bước build trong sơ đồ có thể chuyển sang GitHub runner; các bước còn lại giữ
+nguyên. Đánh đổi chính: GitHub sạch và nhẹ máy hơn, nhưng cần Docker Hub token
+và phụ thuộc Actions.
 
 ---
 
@@ -76,6 +79,7 @@ và máy local trở thành mắt xích tin cậy quan trọng nhất.
 | `deploy/registry/build_and_push.sh` | Build/push backend + nginx (`linux/amd64`) |
 | `deploy/registry/deploy_vps.sh` | Pull-only deploy, health gate, auto-rollback, prune |
 | `.github/workflows/ci.yml` | CI tuỳ chọn: pytest + frontend build, không secrets |
+| `.github/workflows/build.yml` | Build/push image trên GitHub runner (tuỳ chọn, 1 secret) |
 
 Vì sao tách `07` và `deploy_vps.sh`? `07` là phần **điều phối từ xa** (build,
 copy config, SSH); `deploy_vps.sh` là phần **thực thi trên VPS**. Tách như vậy để
@@ -120,15 +124,29 @@ không phải căn cứ để deploy.
 - `Dockerfile` backend: multi-stage, runtime slim, user không đặc quyền.
 - `frontend/Dockerfile`: Node build SPA → Nginx runtime.
 
+Có hai nơi build, dùng chung một script:
+
+- **Máy local**: `07 --build`; cần Docker login.
+- **GitHub runner**: workflow `build.yml` chạy tay; cần secret `DOCKERHUB_TOKEN`.
+  Workflow kiểm tra tag khớp `APP_VERSION`, từ chối `latest` và từ chối ghi đè
+  tag đã có trên Docker Hub. Sau khi image lên registry, local chỉ chạy
+  `07_deploy_now.sh <tag>` (không `--build`).
+
+Cả hai cho ra cùng loại image `linux/amd64`; khác nhau ở nơi thực thi và mức độ
+tin cậy của môi trường build. GitHub runner sạch hơn máy cá nhân (checkout đúng
+commit, không có file chưa commit), nhưng cần quản lý token và phụ thuộc Actions.
+
 **Vì sao không build trên VPS?** e2-micro có 1 GB RAM. `pip install faiss-cpu`,
 `npm ci`, `vite build` dễ OOM, phải bật swap và rất chậm. Build trên máy local:
 - tận dụng CPU/RAM lớn, cache layer của Docker Desktop;
 - VPS không cần toolchain → giảm bề mặt tấn công, giảm dung lượng;
 - cùng một image chạy ở local test và VPS → dễ tái lập lỗi.
 
-Đánh đổi: máy local phải bật Docker, đăng nhập registry và có đủ dung lượng đĩa;
-build phụ thuộc máy cá nhân. Giảm rủi ro bằng Dockerfile pin dependency, build
-đúng `PLATFORM`, và không build lại cùng tag đã phát hành.
+Đánh đổi: build local cần Docker, login registry và đủ dung lượng đĩa; build phụ
+thuộc máy cá nhân. Build trên GitHub sạch và nhẹ máy hơn, nhưng cần Docker Hub
+token, phụ thuộc Actions và tốn phút runner (repo private). Cả hai đều phải giữ
+nguyên tắc: Dockerfile pin dependency, đúng `PLATFORM`, không build lại cùng tag
+đã phát hành.
 
 ---
 
@@ -259,6 +277,7 @@ Nguyên tắc: **fail closed**. Thiếu biến, thiếu key, sai host, tag lạ,
 
 | Tầng | Dấu hiệu | Xem ở đâu |
 |---|---|---|
+| GitHub build | Tag đã tồn tại, không khớp `APP_VERSION`, login Docker Hub fail | Log workflow `build.yml`; kiểm tra secret `DOCKERHUB_TOKEN` |
 | Build local | Docker lỗi, hết đĩa, sai arch | Output `build_and_push.sh`, `docker system df` |
 | Push | `unauthorized`, `insufficient_scope` | `docker login`, quyền token |
 | SSH | Timeout, publickey, host key, sudo | Output `07`, `00`, `01` |
@@ -277,7 +296,8 @@ VPS đã ở trạng thái rollback (hoặc trạng thái lỗi nếu rollback c
 
 | Cách | Ưu | Nhược | Khi nào chọn |
 |---|---|---|---|
-| **Build + deploy từ máy local** (đang dùng) | Không cần secrets/environment/gh; dùng Docker login + SSH key sẵn có; vẫn health gate/rollback | Máy local phải đăng nhập registry; không test tự động trước deploy; log không tập trung | Một người vận hành, giai đoạn đầu, demo nhanh |
+| **Build + deploy từ máy local** | Không cần secrets/environment/gh; dùng Docker login + SSH key sẵn có; vẫn health gate/rollback | Máy local phải đăng nhập registry; không test tự động trước deploy; log không tập trung | Một người vận hành, giai đoạn đầu, demo nhanh |
+| **GitHub build + local deploy** (`build.yml` + `07`) | Build trên runner sạch, không cần Docker local; deploy vẫn do bạn kiểm soát | Cần Docker Hub token trên GitHub; phụ thuộc Actions/phút runner | Muốn CI/build tách khỏi máy cá nhân nhưng chưa muốn giao quyền SSH |
 | GitHub Actions đầy đủ (đã lược bỏ, còn trong git history) | Test/version guard tự động, approval, audit, chạy trên runner khỏe | Cần secrets/environment/gh; thêm một hệ thống phải cấu hình và bảo trì | Có nhiều người deploy, cần audit |
 | VPS tự poll registry (timer) | Không mở SSH, không cần runner deploy | Chậm, khó approve, khó biết ai deploy, cần script so digest | Mạng chặn inbound, nhiều VPS |
 | Self-hosted runner trên VPS | Không mở SSH | Runner ngốn RAM/CPU trên máy 1 GB, bề mặt tấn công lớn | Không khuyến nghị ở đây |
@@ -286,19 +306,20 @@ VPS đã ở trạng thái rollback (hoặc trạng thái lỗi nếu rollback c
 
 Đường nhẹ không phải là "bỏ CI/CD" mà là **dịch chuyển trigger từ GitHub sang
 máy bạn**: vẫn giữ nguyên phần CD quan trọng nhất là `deploy_vps.sh` (pull-only,
-health gate, rollback, prune an toàn). Khác biệt nằm ở ba điểm: (1) image do máy
-local build/push nên phải `docker login` trước; (2) không có job verify nên bạn
-tự chịu trách nhiệm chạy test; (3) không có approval/audit trên GitHub — log chỉ
-ở terminal và trên VPS. Khi cần chia sẻ quy trình với người khác hoặc muốn lịch
-sử deploy đáng tin, hãy khôi phục pipeline đầy đủ từ git history và cấu hình
-secrets một lần.
+health gate, rollback, prune an toàn). Image có thể build ở local hoặc trên GitHub
+runner (`build.yml`); nếu build trên GitHub thì không cần Docker login ở local.
+Khác biệt còn lại: (1) không có job verify tự động gắn với deploy nên bạn tự chịu
+trách nhiệm chạy test; (2) không có approval/audit trên GitHub — log ở terminal,
+workflow và VPS. Khi cần chia sẻ quy trình với người khác hoặc muốn lịch sử deploy
+đáng tin, hãy khôi phục pipeline đầy đủ từ git history và cấu hình secrets một lần.
 
 ---
 
 ## 12. Mở rộng
 
-- **Khôi phục GitHub Actions**: lấy lại `.github/workflows/release.yml` và các
-  script `02`–`04` từ commit trước khi lược bỏ; cấu hình lại Environment/secrets.
+- **Khôi phục deploy qua GitHub Actions**: `build.yml` chỉ build/push; nếu muốn
+  GitHub SSH deploy, lấy lại `release.yml` và các script `02`–`04` từ commit trước
+  khi lược bỏ, rồi cấu hình Environment/secrets.
 - Thêm **staging environment**: cùng workflow, tag `v*-rc*`, secret trỏ VPS staging,
   deploy job thứ hai.
 - **GHCR private**: đổi `DOCKER_IMAGE_PREFIX=ghcr.io/...`, cấp PAT `read:packages`
@@ -336,9 +357,10 @@ secrets một lần.
    Volume chứa dữ liệu thật; image có thể pull lại, dữ liệu thì không. Mọi thao
    tác xoá volume phải là hành động riêng, có backup.
 
-7. **Đường nhẹ mất gì so với GitHub Actions?**
-   Mất verify tự động trên runner, approval và audit trail tập trung. Bù lại bằng
-   test local, health gate/rollback trong script, và ít thành phần phải cấu hình.
+7. **Đường nhẹ mất gì so với GitHub Actions đầy đủ?**
+   Mất approval và audit trail tập trung cho bước deploy; CI và build vẫn có thể
+   chạy trên GitHub (`ci.yml`, `build.yml`) nếu muốn. Bù lại bằng test local,
+   health gate/rollback trong script, và ít thành phần phải cấu hình.
 
 8. **Nếu mất tag `previous`, rollback thế nào?**
    Dùng tag cụ thể còn trên Docker Hub (nếu chưa overwrite) hoặc image ID còn trên
