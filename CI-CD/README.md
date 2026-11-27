@@ -332,6 +332,7 @@ ngược (expand/contract) để image cũ chạy được trên schema mới.
 | Docker Hub `unauthorized` / `insufficient_scope` | Chưa login hoặc token sai/thiếu quyền | `docker login -u neshaki091`; token Read & Write |
 | Workflow build fail: tag đã tồn tại / không khớp `APP_VERSION` / login fail | Chưa bump version, tag nhập sai, hoặc thiếu `DOCKERHUB_TOKEN` | Bump `APP_VERSION`; kiểm tra secret và log workflow |
 | Workflow báo thiếu secret `VPS_*` | Chưa tạo đủ secret VPS | Tạo đủ 6 secret ở mục 6b, hoặc tắt “Deploy lên VPS” nếu chỉ muốn build |
+| Deploy thành công nhưng “Public health” fail, log trả HTML | `PUBLIC_HEALTH_URL` sai path (vd `/healt`) nên Nginx trả SPA index 200 | Sửa secret đúng `https://.../health`; workflow mới phát hiện HTML và fail ngay |
 | Deploy job `Permission denied (publickey)` | `VPS_SSH_KEY` sai hoặc public key chưa cài trên VPS | Kiểm tra fingerprint; cài lại public key vào `~/.ssh/authorized_keys` |
 | Deploy job `ConnectTimeout` | GitHub runner không vào được port 22 | Mở GCP firewall cho dải IP `actions` trong `https://api.github.com/meta` |
 | Deploy job fail sau khi image đã push | VPS/migration/TLS lỗi | `deploy_vps.sh` đã rollback; sửa lỗi rồi chạy lại workflow với cùng tag + bật “Bỏ qua build” |
