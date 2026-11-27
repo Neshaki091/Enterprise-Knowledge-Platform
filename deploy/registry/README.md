@@ -188,10 +188,15 @@ sudo bash deploy/registry/deploy_vps.sh
 
 Script thực hiện:
 
-1. Kiểm tra `docker-compose.registry.yml` và `.env`, validate biến bắt buộc.
-2. `docker compose pull` — tải `postgres:16-alpine`, `ekp-backend:TAG`, `ekp-nginx:TAG`.
-3. `docker compose up -d --remove-orphans` — **không** `--build`.
-4. Chờ `/health` trả `"status":"healthy"`, in `docker compose ps`.
+1. Kiểm tra Docker/Compose, compose file, `.env`, tag (từ chối `latest`), dung lượng đĩa.
+2. `docker compose config -q` để bắt lỗi biến thiếu trước khi pull.
+3. `docker compose pull backend nginx` — chỉ pull 2 image app; PostgreSQL đang chạy **không** bị pull/recreate.
+4. `docker compose up -d --remove-orphans --no-build`.
+5. Chờ `/health` qua Nginx trả `"status":"healthy"` (mặc định 120s, đổi bằng `HEALTH_TIMEOUT_SECONDS`).
+6. Nếu `up` hoặc health thất bại: in `compose ps` + log, tự rollback về image đang chạy trước đó (trừ khi `--no-rollback`). Migration CSDL không được rollback.
+7. Sau khi thành công: gắn tag `previous` cho image vừa bị thay thế, prune image cũ của `ekp-backend`/`ekp-nginx` (giữ bản đang chạy + `--keep N`, mặc định 1), `docker image prune -f` cho layer dangling. Không đụng volume PostgreSQL/FAISS.
+
+Cờ: `--no-pull`, `--no-prune`, `--no-rollback`, `--keep N` (0-5), `-h/--help`.
 
 Lần đầu chưa có TLS, Nginx chỉ mở :80 (ACME + health + redirect). Cấp cert:
 
@@ -209,21 +214,32 @@ Script TLS dùng đúng container `saas_nginx_proxy` và mount `nginx/runtime`,
 
 ```bash
 # Local
-IMAGE_TAG=2.1.1 DOCKER_IMAGE_PREFIX=neshaki091 \
+IMAGE_TAG=2.3.2 DOCKER_IMAGE_PREFIX=neshaki091 \
   bash deploy/registry/build_and_push.sh
 
-# VPS
-sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=2.1.1/' .env
+# VPS — cập nhật .env để 'docker compose up' thủ công về sau không quay lui
+sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=2.3.2/' .env
 sudo bash deploy/registry/deploy_vps.sh
+
+# Hoặc override một lần, không sửa .env (script sẽ cảnh báo)
+sudo IMAGE_TAG=2.3.2 bash deploy/registry/deploy_vps.sh
 ```
 
 `deploy_vps.sh` pull đúng tag mới rồi recreate container. Volume PostgreSQL/FAISS
 và cert TLS được giữ nguyên; không chạy cleanup khi chỉ nâng cấp phiên bản.
+Image cũ được prune sau khi health đạt, giữ bản đang chạy + 1 backup (tag `previous`).
 
 ### Rollback
 
-Đổi `IMAGE_TAG` về tag cũ trong `.env`, chạy lại `deploy_vps.sh` (image cũ vẫn
-còn trên registry). Không cần build lại.
+Khi deploy thành công, script gắn tag `previous` cho image vừa bị thay thế:
+
+```bash
+sudo IMAGE_TAG=previous bash deploy/registry/deploy_vps.sh --no-pull --no-prune
+```
+
+Hoặc pin lại tag cũ trong `.env` rồi chạy lại `deploy_vps.sh` (image cũ vẫn còn
+trên registry). Nếu health fail, script tự rollback bằng tag `rollback-<timestamp>`.
+Rollback image **không** rollback migration CSDL — migration phải tương thích ngược.
 
 ---
 
