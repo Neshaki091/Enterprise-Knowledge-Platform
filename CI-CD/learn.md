@@ -320,6 +320,7 @@ CI runner → https://<domain>/health
 | Cách | Ưu | Nhược | Khi nào chọn |
 |---|---|---|---|
 | **SSH từ CI** (đang dùng) | Đơn giản, kiểm soát thời điểm, audit, rollback sẵn | Cần mở 22 cho runner, quản lý key, DNS/registry là SPOF | VPS nhỏ, ít môi trường |
+| **Build + deploy từ máy local** (`07_deploy_now.sh`) | Không cần secrets/environment/gh; dùng Docker login + SSH key sẵn có; vẫn health gate/rollback | Máy local phải đăng nhập registry; không test tự động trước deploy; log không tập trung | Một người vận hành, giai đoạn đầu, demo nhanh |
 | VPS tự poll registry (timer) | Không mở SSH, không cần runner deploy | Chậm, khó approve, khó biết ai deploy, cần script so digest | Mạng chặn inbound, nhiều VPS |
 | Self-hosted runner trên VPS | Không mở SSH | Runner ngốn RAM/CPU trên máy 1 GB, bề mặt tấn công lớn | Không khuyến nghị ở đây |
 | Kubernetes + GitOps | Chuẩn công nghiệp, tự reconcile | Nặng, vận hành phức tạp, không hợp e2-micro | Khi scale nhiều node |
@@ -327,6 +328,15 @@ CI runner → https://<domain>/health
 
 Pipeline hiện tại là điểm cân bằng giữa **an toàn dữ liệu**, **chi phí 0 đồng**
 và **khả năng giải thích khi phỏng vấn**.
+
+Đường nhẹ không phải là "bỏ CI/CD" mà là **dịch chuyển trigger từ GitHub sang
+máy bạn**: vẫn giữ nguyên phần CD quan trọng nhất là `deploy_vps.sh` (pull-only,
+health gate, rollback, prune an toàn). Khác biệt nằm ở ba điểm: (1) image do máy
+local build/push nên phải `docker login` trước; (2) không có job verify nên bạn
+tự chịu trách nhiệm chạy test; (3) không có approval/audit trên GitHub — log chỉ
+ở terminal và trên VPS. Khi cần chia sẻ quy trình với người khác hoặc muốn lịch
+sử deploy đáng tin, hãy chuyển sang đường đầy đủ: chỉ cần cấu hình secrets một
+lần, không phải viết lại script.
 
 ---
 

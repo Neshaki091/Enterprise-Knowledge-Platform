@@ -7,8 +7,17 @@ Tag vX.Y.Z ──▶ GitHub Actions ──▶ Docker Hub ──▶ duyệt ─�
                (test/build)       (image)       (người)   (pull-only)  (rollback nếu lỗi)
 ```
 
-Nguyên tắc cốt lõi: **VPS không build**. Image được build trên GitHub runner,
-VPS chỉ `git pull` code/config và pull image từ Docker Hub.
+Nguyên tắc cốt lõi: **VPS không build**. Image được build trên GitHub runner
+(hoặc trên máy local), VPS chỉ `git pull` code/config và pull image từ Docker Hub.
+
+Có hai đường phát hành:
+
+| Đường | Dùng khi | Lệnh chính |
+|---|---|---|
+| Đầy đủ (GitHub Actions) | Cần test tự động, duyệt, lịch sử run | `04_release.sh` → approve trên GitHub |
+| Nhẹ (máy local) | Chưa muốn cấu hình secrets/environment/gh | `07_deploy_now.sh --build` |
+
+Cả hai đều gọi chung `deploy_vps.sh` nên vẫn có health gate và auto-rollback.
 
 ---
 
@@ -21,7 +30,7 @@ VPS chỉ `git pull` code/config và pull image từ Docker Hub.
 | `deploy/registry/deploy_vps.sh` | Pull image, recreate stack, health gate, auto-rollback, prune |
 | `deploy/registry/build_and_push.sh` | Build/push `ekp-backend` + `ekp-nginx` |
 | `CI-CD/config.sh` | Giá trị hạ tầng của bạn (gitignore, không commit) |
-| `CI-CD/00..06_*.sh` | Script hỗ trợ từng bước (xem bảng ở mục 5) |
+| `CI-CD/00..07_*.sh` | Script hỗ trợ từng bước (xem bảng ở mục 5) |
 
 ---
 
@@ -148,11 +157,64 @@ Docker Hub secrets phải ở **cấp repository** vì job publish không dùng 
 | `04_release.sh` | Đọc `APP_VERSION`, kiểm tra, push main + tag annotated | Mỗi lần phát hành |
 | `05_verify.sh` | Health HTTPS + `.env`/container/image/health trên VPS | Sau khi deploy |
 | `06_rollback.sh` | Rollback về tag `previous`, tự khôi phục `.env` nếu lỗi | Khi bản mới có vấn đề |
+| `07_deploy_now.sh` | Build/push local (tuỳ chọn) rồi SSH deploy ngay, không cần GitHub | Đường nhẹ, xem mục 5b |
 | `_lib.sh` | Nạp config, validate, wrapper SSH pin host key | Được source bởi các script trên |
 | `config.example.sh` | Mẫu cấu hình | Copy thành `config.sh` |
 
 `04_release.sh` có `--dry-run` (chỉ kiểm tra) và `--yes` (bỏ xác nhận).
 `03_check_ci.sh` có `--watch`. `06_rollback.sh` có `--yes`.
+`07_deploy_now.sh` có `--build` và `--dry-run`.
+
+---
+
+## 5b. Đường nhẹ — deploy từ máy local
+
+Không cần GitHub secrets, Environment, approval hay `gh`. Dùng đúng những thứ
+đã có: Docker Hub login trên máy local + deploy key SSH ở `01_setup_ssh.sh`.
+
+Chuẩn bị một lần:
+
+```bash
+docker login -u neshaki091          # nếu máy chưa đăng nhập Docker Hub
+bash CI-CD/01_setup_ssh.sh          # nếu chưa có key/known_hosts
+bash CI-CD/00_check_vps.sh          # xác nhận VPS sẵn sàng
+```
+
+Phát hành:
+
+```bash
+# 1) Bump version (tránh ghi đè image đã publish)
+sed -i 's/APP_VERSION = "2.3.2"/APP_VERSION = "2.3.3"/' backend/app/core/version.py
+git add backend/app/core/version.py
+git commit -m "release: v2.3.3"
+git push origin main
+
+# 2) Xem trước rồi chạy thật
+bash CI-CD/07_deploy_now.sh --dry-run
+bash CI-CD/07_deploy_now.sh --build
+```
+
+`07` build/push `ekp-backend` + `ekp-nginx` với tag `APP_VERSION`, rồi SSH vào
+VPS: `git pull --ff-only`, cập nhật `IMAGE_TAG` trong `.env`, chạy
+`deploy_vps.sh` (health gate + auto-rollback). Nếu deploy lỗi, script khôi phục
+`IMAGE_TAG` cũ trong `.env`; image/migration xử lý như mục 8.
+
+Các biến thể:
+
+```bash
+bash CI-CD/07_deploy_now.sh 2.3.3        # deploy tag đã có trên Docker Hub, không build
+bash CI-CD/07_deploy_now.sh --build 2.3.3
+```
+
+Lưu ý đường nhẹ:
+
+- Không có bước test tự động trước khi deploy. Chạy `pytest`/build frontend ở
+  local nếu cần; CI trên `main` vẫn chạy độc lập khi bạn push.
+- Không có lịch sử approval trên GitHub; log nằm ở terminal local và trên VPS
+  (`docker logs`, output `deploy_vps.sh`).
+- **Không push tag `v*`** khi chưa cấu hình đủ secrets/environment — workflow
+  release sẽ chạy và dừng ở job publish/deploy. Tag `v*` chỉ dành cho đường đầy đủ.
+- Rollback vẫn dùng `06_rollback.sh` hoặc lệnh thủ công ở mục 8.
 
 ---
 
@@ -278,5 +340,7 @@ curl -fsS https://hub.docker.com/v2/repositories/neshaki091/ekp-backend/tags/ | 
 
 Nếu mọi bước trên đạt, quy trình còn lại chỉ là: bump `APP_VERSION` → commit →
 push main → `04_release.sh` → approve → `05_verify.sh`.
+Chưa cấu hình GitHub thì dùng đường nhẹ: bump `APP_VERSION` → commit → push →
+`07_deploy_now.sh --build` → `05_verify.sh`.
 
 Chi tiết khái niệm và lý do thiết kế: xem [learn.md](learn.md).
