@@ -89,3 +89,6 @@ frontend/dist/
 
 # Bản sao trùng của SR.md
 SR (1).md
+
+# CI-CD: giá trị hạ tầng cá nhân (copy từ CI-CD/config.example.sh)
+CI-CD/config.sh
