@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.core import rls
 from app.core.database import verify_rls_database_role
 from app.core.http_client import close_shared_http_client
+from app.core.version import APP_VERSION
 from app.api.v1.router import api_router
 
 
@@ -28,7 +29,7 @@ openapi_url = "/openapi.json" if settings.ENVIRONMENT != "production" else None
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="2.3.2",
+    version=APP_VERSION,
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,

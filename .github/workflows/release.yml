@@ -88,13 +88,9 @@ jobs:
           RELEASE_TAG: ${{ needs.meta.outputs.tag }}
         run: |
           set -Eeuo pipefail
-          grep -Fq "version=\"${RELEASE_TAG}\"" backend/app/main.py \
-            || { echo "::error::backend/app/main.py chưa đặt version=\"${RELEASE_TAG}\""; exit 1; }
-          grep -Fq "\"version\": \"${RELEASE_TAG}\"" backend/app/api/v1/endpoints/health.py \
-            || { echo "::error::health.py chưa đặt \"version\": \"${RELEASE_TAG}\""; exit 1; }
-          grep -Fq "SERVER_VERSION = \"${RELEASE_TAG}\"" backend/app/mcp/server.py \
-            || { echo "::error::mcp/server.py chưa đặt SERVER_VERSION = \"${RELEASE_TAG}\""; exit 1; }
-          echo "Version nhất quán ở main.py, health.py, mcp/server.py: ${RELEASE_TAG}"
+          grep -Fq "APP_VERSION = \"${RELEASE_TAG}\"" backend/app/core/version.py \
+            || { echo "::error::backend/app/core/version.py chưa đặt APP_VERSION = \"${RELEASE_TAG}\""; exit 1; }
+          echo "Version nhất quán: ${RELEASE_TAG}"
 
       - name: Setup Python
         uses: actions/setup-python@v5

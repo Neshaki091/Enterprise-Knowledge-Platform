@@ -7,6 +7,7 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.exc import SQLAlchemyError
 from app.main import app
 from app.core.database import get_db
+from app.core.version import APP_VERSION
 
 
 @pytest.mark.asyncio
@@ -21,7 +22,7 @@ async def test_health_check_endpoint(client: AsyncClient):
     assert isinstance(data["llm_real_configured"], bool)
     assert isinstance(data["embedding_real_configured"], bool)
     assert "timestamp_utc" in data
-    assert data["version"] == "2.3.2"
+    assert data["version"] == APP_VERSION
 
 
 @pytest.mark.asyncio

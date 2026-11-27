@@ -251,8 +251,8 @@ hoặc chạy tay (workflow_dispatch). VPS vẫn chỉ pull image, không build.
 Luồng:
 
 1. **meta**: validate tag (`v` + phiên bản, từ chối `latest`/ký tự lạ).
-2. **verify**: `pytest backend/tests`, build frontend, kiểm tra version trong `main.py`,
-   `health.py`, `mcp/server.py` khớp tag.
+2. **verify**: `pytest backend/tests`, build frontend, kiểm tra `APP_VERSION` trong
+   `backend/app/core/version.py` khớp tag.
 3. **publish**: login Docker Hub, build/push `ekp-backend` + `ekp-nginx` tag/`latest`,
    ghi digest vào Step Summary.
 4. **deploy**: chờ duyệt ở Environment `production`, rồi SSH vào VPS:
@@ -299,8 +299,9 @@ hạn theo IP nhà, mở thêm dải IP trong `https://api.github.com/meta` (m�
 ### Phát hành
 
 ```bash
-# Bump version ở 3 file trước: main.py, health.py, mcp/server.py
-git add backend/app/main.py backend/app/api/v1/endpoints/health.py backend/app/mcp/server.py
+# Bump APP_VERSION trong backend/app/core/version.py (nguồn duy nhất;
+# FastAPI, health, MCP server và test đều import hằng số này)
+git add backend/app/core/version.py
 git commit -m "release: v2.3.3"
 git push origin main
 

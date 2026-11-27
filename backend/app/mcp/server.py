@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.mcp.protocol import JsonRpcErrorCodes, JsonRpcResponse
 from app.core.context import TenantContext
 from app.core.access import allowed_department_ids
+from app.core.version import APP_VERSION
 from app.schemas.search import SearchRequest
 from app.services.search_service import SearchService
 from app.services.document_service import DocumentService
@@ -24,7 +25,7 @@ class MCPServer:
 
     PROTOCOL_VERSION = "2024-11-05"
     SERVER_NAME = "enterprise-knowledge-mcp"
-    SERVER_VERSION = "2.3.2"
+    SERVER_VERSION = APP_VERSION
 
     # Định nghĩa danh sách các Tools mà MCP Server cung cấp cho AI Agent
     TOOLS_REGISTRY = [
