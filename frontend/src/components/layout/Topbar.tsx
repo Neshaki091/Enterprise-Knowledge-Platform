@@ -23,7 +23,7 @@ function HealthIndicator() {
   return (
     <div
       className="hidden items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[10px] font-medium md:flex"
-      title={data ? `CSDL: ${data.database} · FAISS: ${data.faiss_storage_ready ? "sẵn sàng" : "lỗi"} · v${data.version}` : "Chưa kết nối được API"}
+      title={data ? `CSDL: ${data.database} · FAISS: ${data.faiss_storage_ready ? "sẵn sàng" : "lỗi"} · API version v${data.version}` : "Chưa kết nối được API"}
     >
       <span className={cn("h-1.5 w-1.5 rounded-full", healthy ? "bg-emerald-500" : "bg-red-500")} />
       <span className={healthy ? "text-emerald-700" : "text-red-700"}>

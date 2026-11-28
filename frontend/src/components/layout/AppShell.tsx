@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation } from "react-router-dom";
 import { X } from "lucide-react";
 import { ErrorBoundary } from "@/components/feedback/error-boundary";
 import { Button } from "@/components/ui/button";
+import { systemApi } from "@/lib/api";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 
@@ -10,6 +12,17 @@ import { Topbar } from "./Topbar";
 export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const versionQuery = useQuery({
+    queryKey: ["system", "version"],
+    queryFn: systemApi.version,
+    staleTime: Infinity,
+    retry: 1,
+  });
+  const apiVersion = versionQuery.data
+    ? `v${versionQuery.data.version}`
+    : versionQuery.isError
+      ? "không khả dụng"
+      : "đang tải…";
 
   useEffect(() => {
     setMobileOpen(false);
@@ -61,7 +74,9 @@ export function AppShell() {
         </main>
         <footer className="border-t px-6 py-3">
           <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
-            <span>Enterprise AI Knowledge Platform · v2.1.0</span>
+            <span title={versionQuery.data?.service}>
+              Enterprise AI Knowledge Platform · API version {apiVersion}
+            </span>
             <span>Multi-Tenant · PostgreSQL 16 RLS · FAISS mmap · 1.0 GB RAM budget</span>
           </div>
         </footer>

@@ -24,6 +24,12 @@ async def test_health_check_endpoint(client: AsyncClient):
     assert "timestamp_utc" in data
     assert data["version"] == APP_VERSION
 
+    version_response = await client.get("/api/v1/version")
+    assert version_response.status_code == 200
+    version_data = version_response.json()
+    assert version_data["version"] == APP_VERSION
+    assert version_data["service"] == "Enterprise AI Knowledge Platform API"
+
 
 @pytest.mark.asyncio
 async def test_health_check_returns_503_when_db_down():

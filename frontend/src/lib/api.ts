@@ -2,6 +2,7 @@
 
 import { downloadFile, request } from "./api-client";
 import type {
+  ApiVersionResponse,
   BusinessAdminDashboard,
   ChatAttachment,
   ChatAttachmentListResponse,
@@ -225,6 +226,15 @@ export const dashboardApi = {
 
 export const systemApi = {
   health: (): Promise<HealthResponse> => request<HealthResponse>("/api/v1/health", { auth: false }),
+  version: async (): Promise<ApiVersionResponse> => {
+    try {
+      return await request<ApiVersionResponse>("/api/v1/version", { auth: false });
+    } catch {
+      // Backend cũ (trước 2.6.0) chưa có /version; health vẫn trả cùng trường version.
+      const health = await request<HealthResponse>("/api/v1/health", { auth: false });
+      return { service: health.service, version: health.version };
+    }
+  },
 };
 
 export const mcpApi = {

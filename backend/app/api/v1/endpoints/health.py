@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/version", tags=["System"])
+async def version_info():
+    """Trả về phiên bản API công khai, không phụ thuộc trạng thái CSDL."""
+    return {
+        "service": "Enterprise AI Knowledge Platform API",
+        "version": APP_VERSION,
+    }
+
+
 @router.get("/health", tags=["System"])
 async def health_check(db: AsyncSession = Depends(get_db)):
     """Endpoint kiểm tra sức khỏe hệ thống thực tế (CSDL + FAISS storage + cấu hình AI)."""

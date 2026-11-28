@@ -372,6 +372,11 @@ export interface TenantAnalytics {
   model_api_limits: Record<string, unknown>;
 }
 
+export interface ApiVersionResponse {
+  service: string;
+  version: string;
+}
+
 export interface HealthResponse {
   status: string;
   database: string;
