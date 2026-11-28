@@ -62,3 +62,21 @@ def test_stream_sanitizer_passes_clean_answer():
     pieces.extend(sanitizer.finish())
 
     assert "".join(pieces) == "Nhân viên được nghỉ 14 ngày phép [Nguồn: Policy]."
+
+
+SCREENSHOT_ANSWER = (
+    "Huỳnh Công Luyện là sinh viên Công nghệ Thông tin đã hoàn thành chương trình học "
+    "(GPA 3.34/4.0), có kinh nghiệm thực hành xây dựng hệ thống RAG, Chatbot AI và tích hợp "
+    "[Nguồn: CV (8), Phân mục: [Trang 1]]."
+)
+
+
+def test_sanitize_answer_collapses_inline_duplicate_answer():
+    """Ảnh thực tế: cùng một câu bị model trả về hai lần, dính liền không có khoảng trắng."""
+    cleaned = PromptService.sanitize_answer(SCREENSHOT_ANSWER + SCREENSHOT_ANSWER)
+    assert cleaned == SCREENSHOT_ANSWER
+
+
+def test_sanitize_answer_collapses_duplicate_sentences_with_space():
+    cleaned = PromptService.sanitize_answer(f"{SCREENSHOT_ANSWER} {SCREENSHOT_ANSWER}")
+    assert cleaned == SCREENSHOT_ANSWER

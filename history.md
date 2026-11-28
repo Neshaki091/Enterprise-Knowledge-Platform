@@ -5,6 +5,33 @@ Nguồn chuẩn của version backend là `backend/app/core/version.py`.
 
 ---
 
+## 2.4.1 — 2026-11-28
+
+**Trạng thái:** đã code + test; **chưa build/push/deploy** (production đang 2.4.0).
+
+### Sửa lỗi câu trả lời bị lặp hai lần
+
+**Hiện tượng:** chat SSE trả cùng một câu trả lời hai lần, dính liền kiểu
+`... [Trang 1]].Huỳnh Công Luyện...` (ảnh live sau 2.4.0).
+
+**Nguyên nhân chính:** nếu stream Google/Gemma đứt kết nối *sau khi đã phát token*,
+`LLMService` retry rồi fallback `generateContent` và phát lại toàn bộ câu trả lời.
+Ngoài ra model có thể tự lặp nguyên câu, trong khi sanitizer cũ chỉ dedupe theo đoạn
+cách nhau bằng dòng trống.
+
+**Đã sửa:**
+- `LLMService.stream_answer` theo dõi token đã phát trong từng attempt; nếu lỗi sau khi
+  đã gửi thì dừng, không retry/fallback để tránh phát lặp.
+- `PromptService.SYSTEM_PROMPT` cấm lặp cùng một câu/ý.
+- `sanitize_answer` xoá câu trả lời bị lặp nguyên khối 2–3 lần và câu liền sau trùng
+  câu trước, kể cả khi không có khoảng trắng sau dấu chấm.
+- Thêm test mô phỏng stream đứt sau token đầu và mẫu câu bị lặp trong ảnh.
+
+**Giới hạn:** stream vẫn không thể “thu hồi” token đã gửi; nếu model tự lặp ở giữa
+một câu trả lời dài, chỉ phần non-streaming được dedupe triệt để.
+
+---
+
 ## 2.4.0 — 2026-11-28
 
 **Trạng thái:** đã code + 60 test backend PASS + frontend `tsc`/Vite build PASS;

@@ -235,9 +235,11 @@ class LLMService:
             endpoint, headers, payload = cls._build_request_spec(prompt, stream=True)
             is_google = cls._is_google_provider()
             last_exc: Optional[Exception] = None
+            any_emitted = False
 
             for attempt in range(4):
                 sanitizer = ReasoningStreamSanitizer()
+                attempt_emitted = False
                 try:
                     async with acquire_http_client(transport=transport) as http_client:
                         async with http_client.stream("POST", endpoint, headers=headers, json=payload, timeout=60.0) as resp:
@@ -264,16 +266,29 @@ class LLMService:
                                         text_part = chunk["choices"][0].get("delta", {}).get("content", "")
                                     if text_part:
                                         for clean_piece in sanitizer.feed(text_part):
-                                            yield clean_piece
+                                            if clean_piece:
+                                                attempt_emitted = True
+                                                any_emitted = True
+                                                yield clean_piece
                                 except (json.JSONDecodeError, KeyError, IndexError):
                                     continue
                             for clean_piece in sanitizer.finish():
-                                yield clean_piece
+                                if clean_piece:
+                                    attempt_emitted = True
+                                    any_emitted = True
+                                    yield clean_piece
                             return
                 except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
                     last_exc = exc
+                    if attempt_emitted:
+                        # Đã phát token cho người dùng: retry/fallback sẽ lặp nguyên câu trả lời.
+                        logger.error("Stream lỗi sau khi đã phát token, dừng để tránh lặp nội dung: %s", exc)
+                        break
                     if attempt < 3:
                         await asyncio.sleep(0.5 * (2 ** attempt))
+
+            if any_emitted:
+                return
 
             # Fallback có kiểm soát: nếu endpoint :streamGenerateContent bị 503 tạm thời,
             # thử gọi :generateContent (non-streaming); nếu là mode 'hybrid' sẽ bảo đảm luôn trả lời.

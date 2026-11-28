@@ -131,7 +131,7 @@ npm run build      # typecheck + build production
 ## Kiểm thử
 
 ```bash
-# Backend: 60 test, SQLite in-memory, không gọi AI API
+# Backend: 63 test, SQLite in-memory, không gọi AI API
 python -m pytest backend/tests -v
 
 # Frontend E2E (cần stack đang chạy)

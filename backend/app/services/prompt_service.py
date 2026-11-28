@@ -18,7 +18,7 @@ class PromptService:
         "Bạn là Trợ lý Tri thức Doanh nghiệp. Trả lời bằng tiếng Việt trang trọng, ngắn gọn.\n"
         "QUY TẮC BẮT BUỘC (FAIL-CLOSED):\n"
         "0. CHỈ xuất câu trả lời cuối cùng. KHÔNG lặp lại câu hỏi, KHÔNG liệt kê context/constraints, "
-        "KHÔNG mô tả quá trình suy luận hay tự đánh giá định dạng.\n"
+        "KHÔNG mô tả quá trình suy luận hay tự đánh giá định dạng. KHÔNG lặp lại cùng một câu hoặc cùng một ý.\n"
         "1. CHỈ dùng thông tin trong thẻ <context>. Cấm dùng kiến thức ngoài hay suy diễn.\n"
         "2. Mọi luận điểm/con số phải trích dẫn: [Nguồn: <Tên tài liệu>, Phân mục: <Tên phân mục>].\n"
         "3. Nếu <context> không đủ thông tin, BẮT BUỘC trả lời đúng câu sau: "
@@ -92,7 +92,9 @@ class PromptService:
             else:
                 cleaned = cls._drop_leading_reasoning_lines(cleaned)
 
-        return cls._dedupe_paragraphs(cleaned)
+        cleaned = cls._dedupe_paragraphs(cleaned)
+        cleaned = cls._collapse_adjacent_sentences(cleaned)
+        return cls._collapse_repeated_answer(cleaned)
 
     @classmethod
     def _drop_leading_reasoning_lines(cls, text: str) -> str:
@@ -128,6 +130,42 @@ class PromptService:
             seen.add(key)
             unique.append(paragraph)
         return "\n\n".join(unique).strip()
+
+    @staticmethod
+    def _collapse_adjacent_sentences(text: str) -> str:
+        """Xoá câu liền sau trùng y hệt câu trước, kể cả khi không có khoảng trắng sau dấu chấm."""
+        compact = re.sub(r"\s+", " ", text).strip()
+        if len(compact) < 40:
+            return text
+        pieces = re.split(r"(?<=[.!?])\s*(?=[A-ZÀ-Ỹ])", compact)
+        if len(pieces) < 2:
+            return text
+        unique: List[str] = []
+        previous_key = ""
+        for piece in pieces:
+            stripped = piece.strip()
+            key = re.sub(r"\s+", " ", stripped).lower()
+            if key and key == previous_key:
+                continue
+            unique.append(stripped)
+            previous_key = key
+        if len(unique) == len(pieces):
+            return text
+        return " ".join(unique).strip()
+
+    @staticmethod
+    def _collapse_repeated_answer(text: str) -> str:
+        """Xoá câu trả lời bị lặp nguyên khối 2–3 lần (thường do retry stream)."""
+        compact = re.sub(r"\s+", " ", text).strip()
+        if len(compact) < 80:
+            return text
+        for parts in (3, 2):
+            if len(compact) % parts:
+                continue
+            unit = compact[: len(compact) // parts]
+            if unit and unit * parts == compact:
+                return unit
+        return text
 
 
 class ReasoningStreamSanitizer:
