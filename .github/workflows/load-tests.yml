@@ -86,10 +86,51 @@ jobs:
             fi
           fi
 
+      - name: Publish k6 Summary with Timestamp to Step Summary
+        if: always()
+        run: |
+          python - << 'EOF'
+          import glob, json, os
+          from datetime import datetime, timedelta, timezone
+
+          summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+          if not summary_path:
+              raise SystemExit(0)
+
+          now_utc = datetime.now(timezone.utc)
+          now_vn = now_utc + timedelta(hours=7)
+          lines = [
+              "# Báo cáo Load / Stress Test (k6)",
+              "",
+              f"- **Thời gian chạy (UTC):** `{now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}`",
+              f"- **Thời gian chạy (UTC+7):** `{now_vn.strftime('%Y-%m-%d %H:%M:%S +07:00')}`",
+              "",
+              "| File báo cáo | Tổng Req | Tỷ lệ lỗi | Avg (ms) | P95 (ms) | Max (ms) |",
+              "|---|---|---|---|---|---|",
+          ]
+          files = sorted(glob.glob("load_tests/reports/k6_*.json"))
+          if not files:
+              lines.append("| *(không có file k6 JSON)* | - | - | - | - | - |")
+          for path in files:
+              with open(path, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+              m = data.get("metrics", {})
+              reqs = m.get("http_reqs", {}).get("values", {}).get("count", 0)
+              fail_rate = m.get("http_req_failed", {}).get("values", {}).get("rate", 0.0) * 100.0
+              dur = m.get("http_req_duration", {}).get("values", {})
+              lines.append(
+                  f"| `{os.path.basename(path)}` | `{reqs}` | `{fail_rate:.2f}%` | "
+                  f"`{dur.get('avg', 0):.1f}` | `{dur.get('p(95)', 0):.1f}` | `{dur.get('max', 0):.1f}` |"
+              )
+          lines.append("")
+          with open(summary_path, "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          EOF
+
       - name: Upload Load Test Reports Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: load-test-reports-${{ inputs.suite || 'soak' }}-${{ github.run_number }}
           path: load_tests/reports/
-          retention-days: 30
+          retention-days: 90
