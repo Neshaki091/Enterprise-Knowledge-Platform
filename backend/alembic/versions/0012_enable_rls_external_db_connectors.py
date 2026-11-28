@@ -12,7 +12,7 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "0012_enable_rls_external_db_connectors"
+revision: str = "0012_rls_external_db"
 down_revision: Union[str, None] = "0011_add_chat_attachments"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
