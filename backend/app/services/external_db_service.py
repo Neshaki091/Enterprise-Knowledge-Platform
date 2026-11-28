@@ -68,7 +68,7 @@ class ExternalDBService:
     """Quản lý kết nối DB riêng, cấp phát DB JWT và thực thi truy vấn Read-Only an toàn."""
 
     MAX_ROWS: int = 50
-    QUERY_TIMEOUT_SEC: float = 5.0
+    QUERY_TIMEOUT_SEC: float = 15.0
 
     @classmethod
     def encrypt_dsn(cls, dsn: str, tenant_id: uuid.UUID, tenant_secret: str) -> Tuple[str, str]:
