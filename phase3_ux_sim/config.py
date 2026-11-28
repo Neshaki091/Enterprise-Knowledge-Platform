@@ -1,5 +1,6 @@
 """Cấu hình cho Phase 3 UX Simulation Tool (độc lập với backend runtime)."""
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from typing import List
@@ -113,9 +114,19 @@ class SimConfig:
 
     @property
     def telemetry_dsn(self) -> str:
-        """Trả về DSN Supabase Cloud lưu telemetry nếu có, ngược lại dùng SQLite cục bộ để test."""
+        """Trả về DSN Supabase Cloud nếu có, ngược lại dùng SQLite cục bộ.
+
+        Với target remote, dùng file SQLite riêng theo hash URL để tránh dùng lại
+        danh sách user cũ khi đổi target hoặc backend bị reset DB.
+        """
         if self.supabase_db_url:
             return normalize_async_pg_url(self.supabase_db_url)
+        explicit = os.getenv("SIM_LOCAL_FALLBACK_DB", "").strip()
+        if explicit:
+            return explicit
+        if self.target_api_url != "asgi://local":
+            slug = hashlib.sha1(self.target_api_url.rstrip("/").encode("utf-8")).hexdigest()[:8]
+            return f"sqlite+aiosqlite:///phase3_ux_sim/sim_target_{slug}.db"
         return self.local_fallback_db
 
     @property

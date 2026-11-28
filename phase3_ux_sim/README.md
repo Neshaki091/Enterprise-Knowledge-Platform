@@ -11,13 +11,14 @@ Công cụ độc lập phục vụ **Phase 3 (Sprint 9)** để:
 
 - Đã commit đủ bộ module + workflow thủ công `.github/workflows/phase3-ux-sim.yml` (schedule đang tắt) tại commit `43e0f2e`.
 - **Lần chạy live đầu tiên** (2026-11-26, target backend production): seed 5 user, 3 user hoạt động, 11 hành động; 0 lỗi 5xx, 0 lần 429; search P95 `1.180 ms`; egress `14,68 KB`.
+- **Chạy local quick trên backend 2.6.0** (2026-11-28): seed 20 user/2 tenant, 5 active, 15 hành động (100%), search P95 `501 ms`, 0 lần 429; MCP PASS (SELECT 3 dòng, chặn DROP TABLE); egress `24,64 KB`. Telemetry dùng SQLite riêng theo target (`sim_target_<hash>.db`) do chưa cấu hình `SUPABASE_DB_URL`.
 - **MCP Zero-Knowledge: PASS** vào PostgreSQL/Supabase DB dự án cũ — SELECT `documents` trả 3 dòng, `DROP TABLE` bị chặn (latency `8,1 s`).
 - **Chưa chạy trên GitHub Actions lần nào** (`total_count = 0` trong Actions API) và telemetry vẫn là SQLite fallback vì chưa có `SUPABASE_DB_URL`/`SIM_MCP_DB_URL`/`SIM_TENANT_SECRET` trong GitHub Secrets.
 - Còn thiếu: seed đủ 100 user, telemetry thật lên Supabase Cloud, và phần tải k6 stress/soak (Bài tập 9.1–9.4 trong sprint).
 
 ## Cấu hình biến môi trường / GitHub Secrets
 
-- `SUPABASE_DB_URL`: PostgreSQL DSN của Supabase Cloud dùng để **lưu toàn bộ dữ liệu bài test UX** (`ux_sim_users`, `ux_sim_runs`, `ux_sim_events`, `ux_sim_mcp_checks`). Nếu chưa đặt khi chạy local, tool tự fallback sang `phase3_ux_sim/sim_local.db`.
+- `SUPABASE_DB_URL`: PostgreSQL DSN của Supabase Cloud dùng để **lưu toàn bộ dữ liệu bài test UX** (`ux_sim_users`, `ux_sim_runs`, `ux_sim_events`, `ux_sim_mcp_checks`). Nếu chưa đặt khi chạy local, tool tự fallback sang SQLite: `phase3_ux_sim/sim_local.db` cho `asgi://local`, hoặc `phase3_ux_sim/sim_target_<hash>.db` riêng cho từng target remote (tránh dùng lại user cũ khi đổi target/reset DB).
 - `SIM_MCP_DB_URL`: PostgreSQL DSN của **Supabase Cloud DB dự án cũ** dùng để test kết nối MCP Zero-Knowledge (nếu để trống, tự fallback về `SUPABASE_DB_URL`). Đi kèm `SIM_MCP_ALLOWED_TABLES` và `SIM_MCP_TEST_SQL` tương ứng với bảng thật của dự án cũ.
 - `SIM_TARGET_API_URL`: URL Backend production (ví dụ `https://<ten>.duckdns.org`) hoặc `asgi://local` để test nội bộ.
 - `GOOGLE_API_KEY`: API key dùng cho LLM sinh persona/hành động.

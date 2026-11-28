@@ -29,7 +29,10 @@ logger = logging.getLogger("phase3_ux_sim")
 async def _build_target_client(target_url: str) -> AsyncGenerator[httpx.AsyncClient, None]:
     """Tạo AsyncClient trỏ tới URL thật (VPS/HTTPS) hoặc ASGI cục bộ không cần bật server."""
     if target_url != "asgi://local":
-        async with httpx.AsyncClient(base_url=target_url.rstrip("/"), timeout=60.0) as client:
+        # trust_env=False: tránh lỗi httpx khi NO_PROXY chứa '[::1]' trên Windows.
+        async with httpx.AsyncClient(
+            base_url=target_url.rstrip("/"), timeout=60.0, trust_env=False
+        ) as client:
             yield client
         return
 

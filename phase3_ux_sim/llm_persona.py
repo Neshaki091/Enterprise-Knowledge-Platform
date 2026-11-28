@@ -188,7 +188,8 @@ async def _call_google_llm(
     }
 
     tried_models: set[str] = set()
-    async with httpx.AsyncClient(timeout=35.0) as client:
+    # trust_env=False: tránh lỗi httpx khi NO_PROXY chứa '[::1]' trên Windows.
+    async with httpx.AsyncClient(timeout=35.0, trust_env=False) as client:
         for _ in range(len(pool.models)):
             chosen_model = await pool.acquire(excluded=tried_models)
             if not chosen_model:
