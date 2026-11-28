@@ -12,7 +12,7 @@ Không thay thế bảng feedbacks; feedback vẫn là nguồn đánh giá chấ
 import uuid
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Float, ForeignKey, Integer, JSON, String, Text, Uuid
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, JSON, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -59,5 +59,13 @@ class ChatTurn(Base, UUIDMixin, TimestampMixin):
     compressed_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     compression_savings_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+    # Lượt chat có dùng tài liệu đính kèm riêng của user: loại khỏi export RAGAS của admin
+    # để nội dung private không bị đẩy sang dataset dùng chung.
+    has_attachment: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Session memory sau lượt này, do chính LLM trả về trong cùng một call.
+    # Lượt kế tiếp đọc bản mới nhất; rollback xoá lượt cuối sẽ tự quay về bản trước.
+    session_memory: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     feedback_rating: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)

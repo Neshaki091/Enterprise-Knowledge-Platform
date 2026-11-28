@@ -1,9 +1,10 @@
 """Service lưu và truy vấn trace hội thoại RAG phục vụ lịch sử + RAGAS."""
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +15,109 @@ from app.models.chat_history import ChatTurn
 from app.services.chunking_service import estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+_HISTORY_STOPWORDS: Set[str] = {
+    "là", "của", "và", "có", "được", "trong", "về", "cho", "các", "những", "một",
+    "không", "này", "đó", "khi", "nào", "gì", "sao", "với", "từ", "đến", "tại",
+    "bởi", "theo", "bao", "nhiêu", "mấy", "hãy", "vui", "lòng", "biết", "thì",
+    "the", "is", "are", "was", "were", "what", "how", "why", "when", "where",
+    "in", "on", "at", "of", "to", "for", "and", "or", "a", "an", "by", "with",
+}
+_HISTORY_QUANT_HINTS = (
+    "bao nhiêu", "mấy", "số lượng", "tối đa", "tối thiểu", "bao lâu",
+    "khi nào", "hạn", "ngày", "giờ", "tháng", "năm", "%", "phần trăm",
+)
+
+
+def _clean_history_sentence(sentence: str) -> str:
+    """Làm sạch Markdown cơ bản nhưng giữ nguyên số liệu/trích dẫn."""
+    cleaned = re.sub(r"^\s{0,3}(?:#{1,6}|[-*•]+)\s+", "", sentence)
+    cleaned = re.sub(r"\*{2,}|__|`+", "", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _history_terms(query: str) -> tuple[Set[str], Set[str], bool]:
+    """Trích keyword, bigram và cờ câu hỏi số liệu từ câu hỏi hiện tại."""
+    lower_q = query.lower()
+    is_quant = any(hint in lower_q for hint in _HISTORY_QUANT_HINTS) or bool(re.search(r"\d+", lower_q))
+    raw_tokens = [t for t in re.findall(r"[^\W_]+", lower_q) if len(t) >= 2 or t.isdigit()]
+    content = [t for t in raw_tokens if t not in _HISTORY_STOPWORDS] or raw_tokens
+    bigrams = {f"{raw_tokens[i]} {raw_tokens[i + 1]}" for i in range(len(raw_tokens) - 1)}
+    return set(content), bigrams, is_quant
+
+
+def _compress_history_answer(
+    answer: str,
+    query: str,
+    max_sentences: int,
+    seen: Set[str],
+) -> str:
+    """
+    Nén câu trả lời cũ theo hướng extractive, query-aware.
+
+    Luôn giữ câu đầu (thường chứa kết luận), sau đó chọn thêm tối đa
+    `max_sentences - 1` câu khớp keyword/bigram/số liệu của câu hỏi hiện tại.
+    Không gọi LLM, không làm mất số liệu quan trọng.
+    """
+    raw_sentences = re.split(r"(?<=[.!?])\s+|\n+", (answer or "").strip())
+    cleaned: List[str] = []
+    for raw in raw_sentences:
+        sentence = _clean_history_sentence(raw)
+        if len(sentence) < 8:
+            continue
+        cleaned.append(sentence[:320])
+    if not cleaned:
+        return ""
+
+    query_words, query_bigrams, is_quant = _history_terms(query)
+    chosen: List[tuple[int, str]] = []
+    local_seen: Set[str] = set()
+
+    def _key(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip().lower()
+
+    # Câu đầu tiên luôn được giữ nếu chưa xuất hiện ở lượt trước.
+    first_key = _key(cleaned[0])
+    if first_key not in seen:
+        chosen.append((0, cleaned[0]))
+        local_seen.add(first_key)
+
+    scored: List[tuple[int, str, float]] = []
+    for idx, sentence in enumerate(cleaned[1:], start=1):
+        key = _key(sentence)
+        if key in seen or key in local_seen:
+            continue
+        words = set(re.findall(r"[^\W_]+", key))
+        score = float(len(query_words.intersection(words)))
+        score += 2.0 * sum(1 for bg in query_bigrams if bg in key)
+        if is_quant and re.search(r"\d+", sentence):
+            score += 1.0
+        scored.append((idx, sentence, score))
+
+    if query_words:
+        ranked = sorted(
+            [item for item in scored if item[2] > 0],
+            key=lambda item: (item[2], -item[0]),
+            reverse=True,
+        )
+    else:
+        # Không có query (fallback cũ): giữ thêm câu kế tiếp để không mất mạch.
+        ranked = sorted(scored, key=lambda item: -item[0])[:1]
+
+    for idx, sentence, _score in ranked[: max(0, max_sentences - len(chosen))]:
+        key = _key(sentence)
+        if key in local_seen:
+            continue
+        chosen.append((idx, sentence))
+        local_seen.add(key)
+
+    if not chosen:
+        return ""
+    # Trả lại đúng thứ tự xuất hiện trong câu trả lời gốc.
+    chosen.sort(key=lambda item: item[0])
+    for _idx, sentence in chosen:
+        seen.add(_key(sentence))
+    return " ".join(sentence for _idx, sentence in chosen)
 
 
 class ChatHistoryService:
@@ -40,11 +144,14 @@ class ChatHistoryService:
         compressed_tokens: int = 0,
         output_tokens: int = 0,
         compression_savings_percent: float = 0.0,
+        session_memory: Optional[str] = None,
+        has_attachment: bool = False,
     ) -> Optional[ChatTurn]:
         """Lưu lượt chat; dùng savepoint để lỗi trace không rollback nghiệp vụ chat."""
         if not settings.CHAT_HISTORY_ENABLED or not (query or "").strip() or not (answer or "").strip():
             return None
 
+        memory_value = (session_memory or "").strip()
         turn = ChatTurn(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -63,6 +170,8 @@ class ChatHistoryService:
             compressed_tokens=max(0, int(compressed_tokens)),
             output_tokens=max(0, int(output_tokens)),
             compression_savings_percent=round(float(compression_savings_percent), 2),
+            session_memory=memory_value[:4000] if memory_value else None,
+            has_attachment=bool(has_attachment),
         )
         try:
             async with db.begin_nested():
@@ -119,30 +228,85 @@ class ChatHistoryService:
         return rows
 
     @staticmethod
-    def format_for_prompt(turns: List[ChatTurn], max_tokens: int) -> str:
+    async def get_session_memory(
+        db: AsyncSession,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+    ) -> str:
         """
-        Ghép các lượt cũ thành block hội thoại ngắn cho prompt.
+        Đọc session memory mới nhất của đúng owner/session.
 
-        Lịch sử chỉ giúp hiểu câu hỏi nối tiếp; không phải nguồn chứng cứ.
-        Cắt bớt theo token budget để không làm phình 16K TPM.
+        Memory được LLM trả về trong cùng call của lượt trước; rollback xoá lượt
+        cuối nên lượt trước đó tự trở thành memory hiện hành.
+        """
+        stmt = (
+            select(ChatTurn.session_memory)
+            .where(
+                ChatTurn.tenant_id == tenant_id,
+                ChatTurn.user_id == user_id,
+                ChatTurn.session_id == session_id,
+                ChatTurn.session_memory.is_not(None),
+                ChatTurn.session_memory != "",
+            )
+            .order_by(ChatTurn.created_at.desc(), ChatTurn.id.desc())
+            .limit(1)
+        )
+        return (await db.execute(stmt)).scalar_one_or_none() or ""
+
+    @staticmethod
+    def format_for_prompt(
+        turns: List[ChatTurn],
+        max_tokens: int,
+        query: str = "",
+    ) -> str:
+        """
+        Fallback khi session chưa có LLM memory (session cũ/mock hoặc model lỗi).
+
+        Nén extractive từng câu trả lời theo câu hỏi hiện tại: giữ câu đầu + tối đa
+        2 câu khớp keyword/số liệu, dedup giữa các lượt, rồi ép ngân sách token.
+        Nhờ đó 3 lượt thường vừa 500 token thay vì chỉ còn 1 lượt.
         """
         if not turns or max_tokens <= 0:
             return ""
+
         blocks: List[str] = []
-        for turn in reversed(turns):
-            query = (turn.query or "").strip()
+        seen: Set[str] = set()
+        for position, turn in enumerate(reversed(turns)):
+            turn_query = (turn.query or "").strip()
             answer = (turn.answer or "").strip()
-            if not query or not answer:
+            if not turn_query or not answer:
                 continue
-            answer = answer[:1200]
-            block = f"Người dùng: {query}\nTrợ lý: {answer}"
-            candidate = "\n\n".join([block] + blocks)
-            if estimate_tokens(candidate) > max_tokens:
-                if not blocks:
-                    # Một lượt quá dài: cắt bớt để vẫn giữ được ngữ cảnh gần nhất.
-                    block = block[: max(80, max_tokens * 4)]
-                else:
+
+            sentence_limit = 3 if position == 0 else 2
+            block = ""
+            for limit in (sentence_limit, 2, 1):
+                compressed = _compress_history_answer(
+                    answer,
+                    query=query,
+                    max_sentences=max(1, limit),
+                    seen=set(seen),
+                )
+                if not compressed:
+                    continue
+                candidate_block = f"Người dùng: {turn_query}\nTrợ lý: {compressed}"
+                if estimate_tokens("\n\n".join([candidate_block] + blocks)) <= max_tokens:
+                    block = candidate_block
+                    _compress_history_answer(
+                        answer,
+                        query=query,
+                        max_sentences=max(1, limit),
+                        seen=seen,
+                    )
                     break
+
+            if not block:
+                if blocks:
+                    break
+                # Một lượt quá dài so với ngân sách: giữ phần đầu vừa đủ.
+                compact = f"Người dùng: {turn_query}\nTrợ lý: {answer[:600]}"
+                block = compact[: max(80, max_tokens * 4)]
             blocks.insert(0, block)
         return "\n\n".join(blocks)
 
@@ -196,6 +360,8 @@ class ChatHistoryService:
                 ChatTurn.created_at >= start,
                 ChatTurn.created_at < end,
                 ChatTurn.answer != "",
+                # Tuyệt đối không đưa lượt có tài liệu đính kèm private vào dataset chung.
+                ChatTurn.has_attachment.is_(False),
             )
             .order_by(ChatTurn.created_at.asc(), ChatTurn.id.asc())
             .limit(max(1, min(limit, 500)))
@@ -250,6 +416,10 @@ class ChatHistoryService:
                     "output": turn.output_tokens,
                     "compression_savings_percent": turn.compression_savings_percent,
                 },
+                # Metadata phục vụ phân tích multi-turn; memory KHÔNG nằm trong retrieved_contexts.
+                # Lượt private đã bị lọc khỏi export, nhưng vẫn che memory để phòng thủ nhiều lớp.
+                "has_attachment": bool(turn.has_attachment),
+                "session_memory": None if turn.has_attachment else turn.session_memory,
                 "feedback_rating": turn.feedback_rating,
             },
         }

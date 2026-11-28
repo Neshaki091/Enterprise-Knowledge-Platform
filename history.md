@@ -5,6 +5,75 @@ Nguồn chuẩn của version backend là `backend/app/core/version.py`.
 
 ---
 
+## 2.6.0 — 2026-11-28
+
+**Trạng thái:** đã code + 80 test backend PASS + frontend build PASS;
+**chưa build/push/deploy** (production đang 2.4.0; 2.4.1/2.4.2/2.5.0/2.6.0 cùng chờ deploy).
+
+### Session memory do chính LLM trả về trong cùng một call (~300 token)
+
+- Bỏ cách nhồi raw Q/A của 3 lượt gần nhất làm mặc định; prompt yêu cầu model trả
+  câu trả lời trước, rồi một khối `<session_memory>...</session_memory>` tóm tắt
+  ≤ 250–300 token (thực thể, con số, ràng buộc, mục tiêu, điều đã trả lời).
+- Backend tách khối memory khỏi câu trả lời:
+  - non-stream: `PromptService.split_answer_and_memory`;
+  - SSE: `SessionMemoryStreamFilter` giữ memory ở server, không phát ra UI,
+    xử lý được thẻ bị chia qua nhiều token và thẻ mở nhưng không đóng.
+- Memory lưu vào `chat_turns.session_memory` của chính lượt đó; lượt sau đọc bản mới nhất
+  với đúng tenant/user/session. Rollback xoá lượt cuối nên memory tự quay về bản trước.
+- Memory bắt đầu ngay từ lượt đầu tiên của session; không cần endpoint tạo session riêng.
+- Nếu model/mock không trả khối memory, fallback extractive từ câu trả lời
+  (`PromptService.build_fallback_memory`); session cũ chưa có memory dùng nén extractive
+  3 lượt gần nhất (`CHAT_HISTORY_CONTEXT_TURNS`/`CHAT_HISTORY_CONTEXT_TOKENS`).
+- Cấu hình mới `CHAT_SESSION_MEMORY_TOKENS` (mặc định 300).
+- Đánh đổi: memory là output token của cùng call nên tăng ~200–300 output token/lượt
+  và phụ thuộc model tuân thủ thẻ; filter + fallback bảo đảm không lộ memory ra UI.
+  Không gọi thêm LLM như phương án tóm tắt riêng.
+
+### Tài liệu đính kèm riêng trong chat (ephemeral, không vào FAISS)
+
+- Migration `0011_add_chat_attachments`:
+  - `chat_attachments` (owner + session + TTL), `chat_attachment_chunks`
+    (nội dung + embedding float32 BYTEA);
+  - RLS tenant trên cả hai bảng;
+  - `chat_turns.has_attachment` và `chat_turns.session_memory`.
+- `POST /api/v1/chat/attachments`, `GET /api/v1/chat/attachments`,
+  `DELETE /api/v1/chat/attachments/{id}`:
+  - chỉ owner + đúng session đọc được; admin tenant cũng không đọc qua API attachment;
+  - tối đa 3 file/phiên, 10 file còn hạn/user, 120 chunk/file, 8 MB/file;
+  - TTL mặc định 24h (tối đa 168h), kèm script prune;
+  - tối đa 2 upload xử lý song song (`CHAT_ATTACHMENT_MAX_CONCURRENT_UPLOADS`);
+    semaphore được acquire **trước khi đọc bytes** nên 10 người upload cùng lúc sẽ
+    xếp hàng thay vì cùng giữ 8 MB/file trong RAM backend 350 MB.
+- Không dùng mmap cho file chat: file gốc bị hủy sau parse, vector chỉ vài trăm
+  chunk lưu BYTEA trong PostgreSQL; mmap không giảm peak parse/embed. FAISS mmap
+  vẫn chỉ dành cho index tenant.
+- Không ghi FAISS, không tạo file index theo user: chunk/embedding nằm trong PostgreSQL,
+  chat tính cosine in-process trên đúng tập chunk của session (tối đa vài trăm vector).
+  Nhờ vậy không làm bẩn index tenant, không tăng số file index, và không có chuyện
+  top-K của người khác lấn át tài liệu private.
+- Query embedding được tính một lần và dùng chung cho hybrid search + attachment search.
+- Attachment context đi qua đúng `ContextFilterPipeline` 3 tầng với ngân sách riêng
+  (`CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS`, mặc định 300) trước khi vào prompt.
+- Lượt chat dùng attachment được đánh dấu `has_attachment=true` và **luôn bị loại khỏi
+  export RAGAS**, kể cả khi bật `--include-mock`.
+- Record RAGAS có thêm `metadata.has_attachment` và `metadata.session_memory` để phân tích
+  multi-turn; memory không nằm trong `retrieved_contexts` và bị che (`null`) nếu lượt private
+  (phòng thủ nhiều lớp dù SQL đã lọc).
+- Job dọn TTL: `scripts/prune_chat_attachments.py` (dry-run/batch/tenant), đã copy vào image.
+- Đánh đổi: file không dùng lại ngoài phiên/TTL; nội dung câu trả lời vẫn có thể chứa
+  thông tin private nên export bị loại, nhưng người có quyền DB/admin hệ thống vẫn là
+  ranh giới tin cậy. Muốn thư viện cá nhân lâu dài phải chuyển sang mô hình `visibility`
+  + ACL owner trong kho tri thức, không dùng bảng ephemeral này.
+
+### UI
+
+- Chat có nút đính kèm, chip file + số đoạn + hạn dùng, xoá file; danh sách được nạp lại
+  sau reload theo session.
+- Hiển thị **Nguồn đính kèm** trong câu trả lời; ghi rõ file chỉ thuộc phiên và tự hết hạn.
+
+---
+
 ## 2.5.0 — 2026-11-28
 
 **Trạng thái:** đã code + 66 test backend PASS + frontend build PASS;

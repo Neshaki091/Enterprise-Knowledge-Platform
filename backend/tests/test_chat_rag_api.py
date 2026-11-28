@@ -335,6 +335,10 @@ async def test_chat_query_persists_rag_turn_and_history(client: AsyncClient, db_
     assert exported[0]["metadata"]["chunk_ids"] == turn.chunk_ids
     assert exported[0]["metadata"]["llm_context"]
     assert exported[0]["metadata"]["feedback_rating"] == "THUMBS_UP"
+    assert exported[0]["metadata"]["has_attachment"] is False
+    # Mock không trả thẻ memory nên dùng fallback extractive; vẫn phải có trong metadata.
+    assert exported[0]["metadata"]["session_memory"]
+    assert "14 ngày" in exported[0]["metadata"]["session_memory"]
 
 
 @pytest.mark.asyncio
@@ -416,6 +420,37 @@ async def test_chat_rollback_deletes_latest_turn(client: AsyncClient):
     assert second_rollback.json()["deleted"] is False
 
 
+def test_history_fallback_compresses_three_turns_into_budget():
+    """Fallback cũ phải nén extractive để 3 lượt dài vẫn vừa 500 token."""
+    from app.models.chat_history import ChatTurn
+    from app.services.chat_history_service import ChatHistoryService
+    from app.services.chunking_service import estimate_tokens
+
+    filler = "Đây là câu giải thích phụ không chứa từ khóa quan trọng. " * 20
+    turns = [
+        ChatTurn(
+            query="Nhân viên được bao nhiêu ngày phép năm 2024?",
+            answer=f"Nhân viên được 14 ngày phép có lương mỗi năm. {filler}",
+        ),
+        ChatTurn(
+            query="Đơn nghỉ phép nộp trước bao lâu?",
+            answer=f"Đơn từ 3 ngày phải nộp trước 7 ngày làm việc. {filler}",
+        ),
+        ChatTurn(
+            query="Ai phê duyệt đơn nghỉ phép?",
+            answer=f"Trưởng bộ phận phê duyệt trong 24 giờ. {filler}",
+        ),
+    ]
+
+    text = ChatHistoryService.format_for_prompt(turns, 500, query="điều kiện nghỉ phép")
+
+    assert text.count("Người dùng:") == 3
+    assert estimate_tokens(text) <= 500
+    assert "14 ngày phép" in text
+    assert "7 ngày làm việc" in text
+    assert "24 giờ" in text
+
+
 @pytest.mark.asyncio
 async def test_chat_follow_up_receives_session_memory(client: AsyncClient, monkeypatch):
     """Câu hỏi nối tiếp phải nhận Q/A trước đó của cùng session làm memory."""
@@ -443,7 +478,16 @@ async def test_chat_follow_up_receives_session_memory(client: AsyncClient, monke
 
     captured: dict[str, str] = {}
 
-    async def fake_generate_answer(query, context, mode="hybrid", transport=None, history=None):
+    async def fake_generate_answer(
+        query,
+        context,
+        mode="hybrid",
+        transport=None,
+        history=None,
+        session_memory=None,
+        attachment_context=None,
+    ):
+        captured["session_memory"] = session_memory or ""
         captured["history"] = history or ""
         return "Câu trả lời nối tiếp dựa trên ngữ cảnh.", 20
 
@@ -455,5 +499,7 @@ async def test_chat_follow_up_receives_session_memory(client: AsyncClient, monke
     )
 
     assert second.status_code == 200
-    assert "Nhân viên được bao nhiêu ngày phép?" in captured["history"]
-    assert "14 ngày" in captured["history"]
+    # Lượt đầu đã sinh session memory (fallback extractive vì mock không trả thẻ);
+    # lượt sau nhận memory thay vì raw history.
+    assert "14 ngày" in captured["session_memory"]
+    assert captured["history"] == ""

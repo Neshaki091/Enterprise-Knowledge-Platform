@@ -67,6 +67,51 @@ async def test_streaming_chat_sse_endpoint(client: AsyncClient, db_session):
 
 
 @pytest.mark.asyncio
+async def test_streaming_hides_session_memory_and_persists_it(
+    client: AsyncClient,
+    db_session,
+    monkeypatch,
+):
+    """SSE chỉ phát câu trả lời; khối <session_memory> được giữ lại và lưu cho lượt sau."""
+    from app.services.llm_service import LLMService
+
+    token = await register_and_get_token(client, "stream_mem@corp.com", "Stream Mem Corp", "stream-mem")
+    headers = {"Authorization": f"Bearer {token}"}
+    session_id = "11111111-1111-4111-8111-111111111111"
+
+    async def fake_stream_answer(
+        query,
+        context,
+        mode="hybrid",
+        transport=None,
+        history=None,
+        session_memory=None,
+        attachment_context=None,
+    ):
+        yield "Nhân viên được 14 ngày phép "
+        yield "[Nguồn: Policy].\n<session_"
+        yield "memory>Thực thể: 14 ngày phép; "
+        yield "người dùng hỏi về nghỉ phép.</session_memory>"
+
+    monkeypatch.setattr(LLMService, "stream_answer", fake_stream_answer)
+    response = await client.post(
+        "/api/v1/chat/stream",
+        json={"query": "Bao nhiêu ngày phép?", "mode": "real", "session_id": session_id},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "14 ngày phép" in body
+    assert "<session_memory>" not in body
+    assert "Thực thể" not in body
+
+    turns = (await db_session.execute(select(ChatTurn))).scalars().all()
+    assert len(turns) == 1
+    assert turns[0].answer == "Nhân viên được 14 ngày phép [Nguồn: Policy]."
+    assert "Thực thể: 14 ngày phép" in (turns[0].session_memory or "")
+
+
+@pytest.mark.asyncio
 async def test_feedback_submission(client: AsyncClient):
     """Kiểm thử gửi đánh giá câu trả lời Thumbs Up / Down."""
     token = await register_and_get_token(client, "fb_user@test.com", "Feedback Corp", "fb-corp")

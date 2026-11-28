@@ -1,6 +1,10 @@
 """Kiểm thử bộ lọc reasoning/self-check bị Gemma trả về không kèm cờ thought."""
 
-from app.services.prompt_service import PromptService, ReasoningStreamSanitizer
+from app.services.prompt_service import (
+    PromptService,
+    ReasoningStreamSanitizer,
+    SessionMemoryStreamFilter,
+)
 
 
 LEAKED_GEMMA_ANSWER = """• User Question: “huỳnh công luyện là ai”
@@ -93,3 +97,87 @@ def test_build_rag_prompt_includes_session_memory():
     assert "Chính sách nghỉ phép?" in prompt
     assert "<context>" in prompt
     assert "Còn điều kiện nào nữa?" in prompt
+
+
+def test_build_rag_prompt_includes_llm_memory_and_attachment_block():
+    prompt = PromptService.build_rag_prompt(
+        "Còn điều kiện nào nữa?",
+        "Ngữ cảnh doanh nghiệp",
+        session_memory="Người dùng hỏi về nghỉ phép; đã trả lời 14 ngày.",
+        attachment_context="[Nguồn: Tài liệu đính kèm: hop_dong.pdf]\nThời hạn hợp đồng 12 tháng.",
+    )
+
+    assert "<previous_session_memory>" in prompt
+    assert "đã trả lời 14 ngày" in prompt
+    assert "<attachments>" in prompt
+    assert "hop_dong.pdf" in prompt
+    assert "<session_memory>" in prompt  # instruction buộc model trả memory ở cuối
+
+
+def test_split_answer_and_memory_hides_metadata_block():
+    raw = (
+        "Nhân viên được 14 ngày phép [Nguồn: Policy, Phân mục: Nghỉ phép].\n"
+        "<session_memory>Đã trả lời: 14 ngày phép; người dùng hỏi về nghỉ phép.</session_memory>"
+    )
+    answer, memory = PromptService.split_answer_and_memory(raw)
+
+    assert "14 ngày phép" in answer
+    assert "session_memory" not in answer
+    assert "14 ngày phép" in memory
+    assert "<session_memory>" not in memory
+
+
+def test_split_answer_and_memory_handles_unclosed_tag():
+    raw = "Câu trả lời ngắn.\n<session_memory>Thực thể: hợp đồng 12 tháng"
+    answer, memory = PromptService.split_answer_and_memory(raw)
+
+    assert answer == "Câu trả lời ngắn."
+    assert "hợp đồng 12 tháng" in memory
+
+
+def test_stream_memory_filter_hides_block_split_across_chunks():
+    sanitizer = SessionMemoryStreamFilter()
+    raw = (
+        "Câu trả lời có trích dẫn [Nguồn: Policy].\n"
+        "<session_memory>Thực thể: 14 ngày phép; đã trả lời đầy đủ.</session_memory>"
+    )
+    pieces = []
+    for index in range(0, len(raw), 5):
+        pieces.extend(sanitizer.feed(raw[index:index + 5]))
+    pieces.extend(sanitizer.finish())
+
+    visible = "".join(pieces)
+    assert "Câu trả lời có trích dẫn" in visible
+    assert "session_memory" not in visible
+    assert "Thực thể" not in visible
+    assert "14 ngày phép" in sanitizer.memory_text
+
+
+def test_stream_memory_filter_passes_clean_answer():
+    sanitizer = SessionMemoryStreamFilter()
+    pieces = sanitizer.feed("Không có memory tag, chỉ có câu trả lời.")
+    pieces.extend(sanitizer.finish())
+
+    assert "".join(pieces) == "Không có memory tag, chỉ có câu trả lời."
+    assert sanitizer.memory_text == ""
+
+
+def test_truncate_session_memory_respects_300_token_budget():
+    from app.services.chunking_service import estimate_tokens
+
+    raw = "Người dùng hỏi về hợp đồng lao động. " * 200
+    memory = PromptService.truncate_session_memory(raw, 300)
+
+    assert estimate_tokens(memory) <= 300
+    assert "hợp đồng lao động" in memory
+
+
+def test_build_fallback_memory_is_extractive_and_query_aware():
+    memory = PromptService.build_fallback_memory(
+        "Nhân viên được bao nhiêu ngày phép?",
+        "Nhân viên được 14 ngày phép mỗi năm. Đơn từ 3 ngày phải nộp trước 7 ngày.",
+    )
+
+    assert "Nhân viên được bao nhiêu ngày phép?" in memory
+    assert "14 ngày phép" in memory
+    assert "session_memory" not in memory

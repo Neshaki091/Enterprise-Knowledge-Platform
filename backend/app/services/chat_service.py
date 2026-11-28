@@ -19,11 +19,19 @@ from app.core.context import TenantContext
 from app.core.access import ensure_department_allowed
 from app.models.tenant import Tenant
 from app.schemas.search import SearchRequest
-from app.schemas.chat import ChatQueryRequest, ChatQueryResponse, ChatCitation
+from app.schemas.chat import (
+    ChatAttachmentCitation,
+    ChatCitation,
+    ChatQueryRequest,
+    ChatQueryResponse,
+)
 from app.services.quota_service import quota_manager, resolve_tenant_limits
 from app.services.search_service import SearchService
 from app.services.context_filter import ContextFilterPipeline
+from app.services.embedding_service import EmbeddingService
+from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.llm_service import LLMService
+from app.services.prompt_service import PromptService
 from app.services.telemetry_service import TelemetryService
 from app.services.chat_history_service import ChatHistoryService
 from app.services.chunking_service import estimate_tokens
@@ -47,19 +55,40 @@ class ChatService:
         allowed_departments = ensure_department_allowed(context, request.department_id)
         session_id = request.session_id or uuid.uuid4()
 
-        # 0b. Nạp session memory ngắn (chỉ để hiểu câu hỏi nối tiếp, không phải chứng cứ).
-        history_turns = await ChatHistoryService.list_recent_turns(
+        # 0b. Session memory do LLM trả về ở lượt trước; nếu chưa có (session cũ/mock)
+        # thì fallback nén extractive các lượt gần nhất.
+        memory_text = await ChatHistoryService.get_session_memory(
             db,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             session_id=session_id,
-            limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
         )
-        history_text = ChatHistoryService.format_for_prompt(
-            history_turns,
-            settings.CHAT_HISTORY_CONTEXT_TOKENS,
+        history_turns = []
+        history_text = ""
+        if not memory_text:
+            history_turns = await ChatHistoryService.list_recent_turns(
+                db,
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                session_id=session_id,
+                limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
+            )
+            history_text = ChatHistoryService.format_for_prompt(
+                history_turns,
+                settings.CHAT_HISTORY_CONTEXT_TOKENS,
+                query=request.query,
+            )
+        session_context_text = memory_text or history_text
+        session_context_tokens = estimate_tokens(session_context_text) if session_context_text else 0
+        has_attachment = await ChatAttachmentService.has_active(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
         )
-        history_tokens = estimate_tokens(history_text) if history_text else 0
+        attachment_reserved = (
+            settings.CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS if has_attachment else 0
+        )
 
         # 1. KIỂM SOÁT HẠN MỨC (áp dụng quota_limits.rpm_limit / tpm_limit của từng Tenant)
         tenant = await db.get(Tenant, context.tenant_id)
@@ -70,7 +99,11 @@ class ChatService:
         # Đặt cọc token dự kiến dựa trên trần nén tối đa + session memory (sẽ hoàn lại phần dư).
         reserved_tokens = min(
             tpm_limit,
-            request.max_context_tokens + 160 + max(30, len(request.query) // 3) + history_tokens,
+            request.max_context_tokens
+            + 160
+            + max(30, len(request.query) // 3)
+            + session_context_tokens
+            + attachment_reserved,
         )
         is_allowed, retry_after = await quota_manager.acquire(
             tenant_str,
@@ -97,7 +130,11 @@ class ChatService:
                 headers={"Retry-After": str(retry_after)}
             )
 
-        # 2. TÌM KIẾM LAI (Hybrid Search RRF)
+        # 2. TÌM KIẾM LAI (Hybrid Search RRF) + tài liệu đính kèm của chính user/session.
+        # Embedding câu hỏi được tính một lần và dùng chung cho cả hai nguồn.
+        query_vector = await EmbeddingService.get_embedding(
+            request.query, task_type="RETRIEVAL_QUERY"
+        )
         search_req = SearchRequest(
             query=request.query,
             top_k=request.top_k,
@@ -108,7 +145,34 @@ class ChatService:
             context.tenant_id,
             search_req,
             allowed_department_ids=allowed_departments,
+            query_vector=query_vector,
         )
+
+        attachment_hits = await ChatAttachmentService.search(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            query_vector=query_vector,
+            top_k=min(3, request.top_k),
+        )
+        attachment_context, attachment_stats = await ChatAttachmentService.build_context(
+            request.query,
+            attachment_hits,
+            settings.CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS,
+        )
+        attachment_tokens = int(attachment_stats.get("attachment_tokens", 0) or 0)
+        used_attachment_ids = set(attachment_stats.get("retained_chunk_ids", []) or [])
+        attachment_sources = [
+            ChatAttachmentCitation(
+                attachment_id=hit.document_id,
+                file_name=hit.document_title.removeprefix("Tài liệu đính kèm: "),
+                chunk_id=hit.child_chunk_id,
+                score=hit.rrf_score,
+            )
+            for hit in attachment_hits
+            if str(hit.child_chunk_id) in used_attachment_ids
+        ]
 
         # 3. LỌC VÀ NÉN NGỮ CẢNH 3 TẦNG (CPU-bound -> thread, không chặn event loop)
         filtered_context, comp_stats = await asyncio.to_thread(
@@ -120,9 +184,12 @@ class ChatService:
         )
         # Hoàn trả phần token tiết kiệm được về lại TPM bucket (hoặc trừ thêm nếu vượt dự kiến)
         base_prompt_tokens = int(comp_stats.get("prompt_input_tokens", 0) or 0)
-        prompt_input_tokens = base_prompt_tokens + history_tokens
-        comp_stats["history_tokens"] = history_tokens
+        prompt_input_tokens = base_prompt_tokens + session_context_tokens + attachment_tokens
+        comp_stats["history_tokens"] = session_context_tokens if not memory_text else 0
         comp_stats["history_turns"] = len(history_turns)
+        comp_stats["session_memory_tokens"] = estimate_tokens(memory_text) if memory_text else 0
+        comp_stats["attachment_tokens"] = attachment_tokens
+        comp_stats["attachments_used"] = int(attachment_stats.get("attachment_chunks", 0) or 0)
         await quota_manager.reconcile_tokens(
             tenant_str,
             reserved_tokens=reserved_tokens,
@@ -145,14 +212,23 @@ class ChatService:
             for r in retrieved_chunks
         ]
 
-        # 4. SUY LUẬN TỪ GEMMA 4 26B (Grounded LLM Generation)
+        # 4. SUY LUẬN TỪ GEMINI 3.5 FLASH LITE (Grounded LLM Generation)
         try:
-            answer, tokens_used = await LLMService.generate_answer(
+            raw_answer, tokens_used = await LLMService.generate_answer(
                 query=request.query,
                 context=filtered_context,
                 mode=request.mode,
                 history=history_text,
+                session_memory=memory_text,
+                attachment_context=attachment_context,
             )
+            answer, new_memory = PromptService.split_answer_and_memory(
+                raw_answer, settings.CHAT_SESSION_MEMORY_TOKENS
+            )
+            if not new_memory:
+                new_memory = PromptService.build_fallback_memory(
+                    request.query, answer, settings.CHAT_SESSION_MEMORY_TOKENS
+                )
         except HTTPException as exc:
             await TelemetryService.record_event(
                 db,
@@ -196,6 +272,10 @@ class ChatService:
                 "retained_chunks": comp_stats.get("retained_chunks", 0),
                 "retrieved_count": len(retrieved_chunks),
                 "history_turns": len(history_turns),
+                "session_memory_tokens": comp_stats.get("session_memory_tokens", 0),
+                "attachment_tokens": attachment_tokens,
+                "attachments_used": comp_stats.get("attachments_used", 0),
+                "has_attachment": bool(attachment_context),
             },
             persist=True,
         )
@@ -231,6 +311,8 @@ class ChatService:
             compressed_tokens=comp_stats.get("compressed_tokens", 0),
             output_tokens=output_tokens,
             compression_savings_percent=float(comp_stats.get("savings_percent", 0.0)),
+            session_memory=new_memory,
+            has_attachment=bool(attachment_context),
         )
 
         return ChatQueryResponse(
@@ -239,6 +321,7 @@ class ChatService:
             session_id=session_id,
             retrieved_chunks=retrieved_chunks,
             citations=citations,
+            attachment_sources=attachment_sources,
             tokens_used=tokens_used,
             compression_stats=comp_stats,
             mode=request.mode

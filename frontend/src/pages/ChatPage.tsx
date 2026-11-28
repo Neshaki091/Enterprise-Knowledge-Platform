@@ -10,6 +10,7 @@ import {
   FileText,
   Layers,
   MessageSquareText,
+  Paperclip,
   RefreshCw,
   Send,
   Sparkles,
@@ -17,6 +18,7 @@ import {
   ThumbsUp,
   Timer,
   Undo2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/features/auth/auth-context";
@@ -24,6 +26,7 @@ import { chatApi, departmentApi, systemApi } from "@/lib/api";
 import { ApiError, describeApiError, streamChat } from "@/lib/api-client";
 import { formatNumber } from "@/lib/utils";
 import type {
+  ChatAttachment,
   ChatCitation,
   ChatHistoryTurn,
   ChatMode,
@@ -262,9 +265,12 @@ export function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const tenantId = me?.tenant_id;
 
   const departmentsQuery = useQuery({ queryKey: ["departments"], queryFn: departmentApi.list });
@@ -306,6 +312,7 @@ export function ChatPage() {
     setCooldownUntil(null);
     setSessionId(null);
     setHistoryLoading(false);
+    setAttachments([]);
   }, [tenantId, me?.user_id]);
 
   // Mỗi cặp tenant/user có session riêng trong localStorage để reload vẫn nối đúng hội thoại.
@@ -339,6 +346,26 @@ export function ChatPage() {
       })
       .finally(() => {
         if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  // Nạp danh sách tài liệu đính kèm còn hạn của phiên (chỉ metadata, không nội dung).
+  useEffect(() => {
+    if (!sessionId) {
+      setAttachments([]);
+      return;
+    }
+    let cancelled = false;
+    chatApi
+      .attachments(sessionId)
+      .then((response) => {
+        if (!cancelled) setAttachments(response.attachments);
+      })
+      .catch(() => {
+        if (!cancelled) setAttachments([]);
       });
     return () => {
       cancelled = true;
@@ -389,17 +416,47 @@ export function ChatPage() {
     }
   };
 
+  const ensureSessionId = (): string => {
+    if (sessionId) return sessionId;
+    const next = createSessionId();
+    setSessionId(next);
+    persistSession(next);
+    return next;
+  };
+
+  const uploadAttachment = async (file: File): Promise<void> => {
+    if (!file || attachmentUploading) return;
+    const activeSessionId = ensureSessionId();
+    setAttachmentUploading(true);
+    try {
+      const attachment = await chatApi.uploadAttachment(activeSessionId, file);
+      setAttachments((current) => [...current, attachment]);
+      toast.success(`Đã đính kèm ${attachment.file_name} (${attachment.chunk_count} phân đoạn)`);
+    } catch (error) {
+      toast.error(describeApiError(error, "Không tải được tài liệu đính kèm."));
+    } finally {
+      setAttachmentUploading(false);
+      if (attachmentInputRef.current) attachmentInputRef.current.value = "";
+    }
+  };
+
+  const removeAttachment = async (attachmentId: string): Promise<void> => {
+    if (attachmentUploading) return;
+    try {
+      await chatApi.deleteAttachment(attachmentId);
+      setAttachments((current) => current.filter((item) => item.id !== attachmentId));
+      toast.success("Đã xoá tài liệu đính kèm.");
+    } catch (error) {
+      toast.error(describeApiError(error, "Không xoá được tài liệu đính kèm."));
+    }
+  };
+
   const sendQuery = async (rawQuery: string): Promise<void> => {
     const trimmed = rawQuery.trim();
     if (trimmed.length < 2 || trimmed.length > 2000) return;
-    if (abortRef.current || cooldownSeconds > 0) return;
+    if (abortRef.current || cooldownSeconds > 0 || attachmentUploading) return;
 
-    let activeSessionId = sessionId;
-    if (!activeSessionId) {
-      activeSessionId = createSessionId();
-      setSessionId(activeSessionId);
-      persistSession(activeSessionId);
-    }
+    const activeSessionId = ensureSessionId();
 
     const assistantId = createEntryId();
     const userEntry: ConversationEntry = {
@@ -499,6 +556,7 @@ export function ChatPage() {
     setTarget(null);
     setCooldownUntil(null);
     setHistoryLoading(false);
+    setAttachments([]);
   };
 
   const rollbackLastTurn = async (): Promise<void> => {
@@ -531,7 +589,7 @@ export function ChatPage() {
   };
 
   const sendDisabled =
-    input.trim().length < 2 || isStreaming || cooldownSeconds > 0;
+    input.trim().length < 2 || isStreaming || cooldownSeconds > 0 || attachmentUploading;
 
   const providerBadge = healthQuery.isError ? (
     <Badge variant="destructive">Không đọc được trạng thái LLM</Badge>
@@ -562,7 +620,11 @@ export function ChatPage() {
             >
               <Undo2 /> {rollingBack ? "Đang hoàn tác..." : "Hoàn tác lượt cuối"}
             </Button>
-            <Button variant="outline" onClick={resetConversation} disabled={entries.length === 0}>
+            <Button
+              variant="outline"
+              onClick={resetConversation}
+              disabled={entries.length === 0 || attachmentUploading}
+            >
               <RefreshCw /> Cuộc trò chuyện mới
             </Button>
           </>
@@ -823,6 +885,25 @@ export function ChatPage() {
                       </div>
                     ) : null}
 
+                    {entry.done?.attachment_sources && entry.done.attachment_sources.length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Nguồn đính kèm
+                        </span>
+                        {entry.done.attachment_sources.map((source) => (
+                          <span
+                            key={`${source.attachment_id}-${source.chunk_id}`}
+                            className="inline-flex max-w-[300px] items-center gap-1.5 rounded-full border border-dashed bg-card px-2 py-1 text-[10px] text-muted-foreground"
+                            title="Tài liệu riêng của phiên chat; người khác không truy cập được."
+                          >
+                            <Paperclip className="h-3 w-3 shrink-0 text-indigo-500" />
+                            <span className="truncate">{source.file_name}</span>
+                            <span className="shrink-0 font-mono">{source.score.toFixed(3)}</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
                     <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
                       <Badge variant="outline">{MODE_LABELS[entry.mode ?? "hybrid"]}</Badge>
                       {typeof entry.firstTokenMs === "number" ? (
@@ -906,10 +987,47 @@ export function ChatPage() {
               <span className="font-mono font-semibold">{cooldownSeconds}s</span> rồi gửi lại.
             </Alert>
           ) : null}
+          {attachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Đính kèm riêng
+              </span>
+              {attachments.map((attachment) => (
+                <span
+                  key={attachment.id}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-[10px]"
+                  title={`Chỉ bạn thấy file này. Tự hết hạn lúc ${new Date(attachment.expires_at).toLocaleString()}.`}
+                >
+                  <Paperclip className="h-3 w-3 shrink-0 text-indigo-500" />
+                  <span className="max-w-[220px] truncate font-medium">{attachment.file_name}</span>
+                  <span className="shrink-0 text-muted-foreground">{attachment.chunk_count} đoạn</span>
+                  <button
+                    type="button"
+                    className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    aria-label={`Xoá ${attachment.file_name}`}
+                    disabled={attachmentUploading}
+                    onClick={() => void removeAttachment(attachment.id)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            className="hidden"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.csv"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void uploadAttachment(file);
+            }}
+          />
           <div className="relative">
             <Textarea
               rows={2}
-              className="min-h-[76px] resize-none pb-9 pr-28 text-sm"
+              className="min-h-[76px] resize-none pb-9 pr-36 text-sm"
               placeholder="Đặt câu hỏi về tài liệu doanh nghiệp (2–2000 ký tự)…"
               value={input}
               maxLength={2000}
@@ -917,6 +1035,21 @@ export function ChatPage() {
               onKeyDown={handleComposerKeyDown}
             />
             <div className="absolute bottom-2 right-2 flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="Đính kèm tài liệu riêng cho phiên chat (chỉ bạn thấy, tự hết hạn)"
+                aria-label="Đính kèm tài liệu"
+                disabled={isStreaming || attachmentUploading}
+                onClick={() => attachmentInputRef.current?.click()}
+              >
+                {attachmentUploading ? (
+                  <Spinner className="h-3.5 w-3.5" />
+                ) : (
+                  <Paperclip className="h-3.5 w-3.5" />
+                )}
+              </Button>
               <span className="text-[10px] tabular-nums text-muted-foreground">{input.length}/2000</span>
               {isStreaming ? (
                 <Button
@@ -935,7 +1068,8 @@ export function ChatPage() {
           </div>
           <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
             Enter để gửi · Shift+Enter xuống dòng. Mỗi câu trả lời đều chịu kiểm soát hạn mức Tenant và chỉ dùng
-            tài liệu trong phạm vi ACL.
+            tài liệu trong phạm vi ACL. File đính kèm chỉ thuộc phiên của bạn, không vào kho tri thức chung
+            và tự hết hạn.
           </p>
         </div>
       </Card>

@@ -11,16 +11,19 @@ import zlib
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.context import get_current_tenant_context, TenantContext
 from app.models.feedback import ChatFeedback
 from app.models.chat_history import ChatTurn
 from app.schemas.chat import (
+    ChatAttachmentListResponse,
+    ChatAttachmentResponse,
     ChatQueryRequest,
     ChatQueryResponse,
     ChatFeedbackCreate,
@@ -32,6 +35,7 @@ from app.schemas.chat import (
 from app.services.chat_service import ChatService
 from app.services.streaming_service import StreamingChatService
 from app.services.chat_history_service import ChatHistoryService
+from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.telemetry_service import TelemetryService
 
 router = APIRouter()
@@ -91,6 +95,124 @@ async def stream_chat_endpoint(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.post(
+    "/attachments",
+    response_model=ChatAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Đính kèm tài liệu riêng cho phiên chat (ephemeral, chỉ owner đọc được)",
+)
+async def upload_chat_attachment(
+    session_id: uuid.UUID = Form(..., description="ID phiên chat do client giữ"),
+    file: UploadFile = File(..., description="File PDF/Word/Excel/TXT"),
+    title: Optional[str] = Form(None),
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    File chỉ thuộc tenant + user + session hiện tại; không ghi FAISS, không vào Knowledge Hub,
+    tự hết hạn sau CHAT_ATTACHMENT_TTL_HOURS. Người khác (kể cả admin tenant) không đọc được
+    qua API attachment.
+    """
+    # Acquire TRƯỚC khi đọc bytes: 10 request 8 MB không cùng nằm trong RAM.
+    # Nếu vượt trần, request xếp hàng thay vì làm OOM backend 350 MB.
+    await ChatAttachmentService.acquire_upload_slot()
+    try:
+        max_bytes = int(settings.CHAT_ATTACHMENT_MAX_SIZE_BYTES)
+        file_bytes = await file.read(max_bytes + 1)
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tập tin đính kèm rỗng")
+        if len(file_bytes) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Tập tin đính kèm vượt quá giới hạn {max_bytes // (1024 * 1024)} MB của chat.",
+            )
+
+        attachment = await ChatAttachmentService.ingest(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            file_name=file.filename or "unknown_file",
+            file_bytes=file_bytes,
+            content_type=file.content_type,
+            title=title,
+        )
+        await TelemetryService.record_event(
+            db,
+            event_type="chat_attachment_upload",
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            status_code=201,
+            input_tokens=attachment.token_count,
+            details={
+                "session_id": str(session_id),
+                "file_type": attachment.file_type,
+                "file_size_bytes": attachment.file_size_bytes,
+                "chunk_count": attachment.chunk_count,
+            },
+            persist=True,
+        )
+        await db.commit()
+        return attachment
+    finally:
+        ChatAttachmentService.release_upload_slot()
+
+
+@router.get(
+    "/attachments",
+    response_model=ChatAttachmentListResponse,
+    summary="Liệt kê tài liệu đính kèm còn hạn của phiên chat hiện tại",
+)
+async def list_chat_attachments(
+    session_id: uuid.UUID = Query(...),
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Chỉ trả metadata của chính user trong đúng session; không trả nội dung/embedding."""
+    attachments = await ChatAttachmentService.list_active(
+        db,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        session_id=session_id,
+    )
+    return ChatAttachmentListResponse(total=len(attachments), attachments=attachments)
+
+
+@router.delete(
+    "/attachments/{attachment_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Xoá tài liệu đính kèm của chính mình",
+)
+async def delete_chat_attachment(
+    attachment_id: uuid.UUID,
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Chỉ owner mới xoá được; xoá cascade toàn bộ chunk + embedding."""
+    deleted = await ChatAttachmentService.delete_owned(
+        db,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        attachment_id=attachment_id,
+    )
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy tài liệu đính kèm của bạn.",
+        )
+    await TelemetryService.record_event(
+        db,
+        event_type="chat_attachment_delete",
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        status_code=200,
+        details={"attachment_id": str(attachment_id)},
+        persist=True,
+    )
+    await db.commit()
+    return {"deleted": True, "attachment_id": str(attachment_id)}
 
 
 @router.get(

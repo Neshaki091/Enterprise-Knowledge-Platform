@@ -27,8 +27,11 @@ from app.services.quota_service import quota_manager, resolve_tenant_limits
 from app.services.search_service import SearchService
 from app.services.context_filter import ContextFilterPipeline
 from app.services.llm_service import LLMService
+from app.services.prompt_service import PromptService, SessionMemoryStreamFilter
 from app.services.telemetry_service import TelemetryService
 from app.services.chat_history_service import ChatHistoryService
+from app.services.chat_attachment_service import ChatAttachmentService
+from app.services.embedding_service import EmbeddingService
 from app.services.chunking_service import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -55,12 +58,31 @@ class StreamingChatService:
         ensure_department_allowed(context, request.department_id)
         tenant = await db.get(Tenant, context.tenant_id)
         limits = resolve_tenant_limits(tenant.quota_limits if tenant else None)
+        session_id = request.session_id or uuid.uuid4()
+        memory_text = await ChatHistoryService.get_session_memory(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+        )
+        session_context_tokens = (
+            estimate_tokens(memory_text)
+            if memory_text
+            else settings.CHAT_HISTORY_CONTEXT_TOKENS
+        )
+        has_attachment = await ChatAttachmentService.has_active(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+        )
         reserved_tokens = min(
             limits["tpm_limit"],
             request.max_context_tokens
             + 160
             + max(30, len(request.query) // 3)
-            + settings.CHAT_HISTORY_CONTEXT_TOKENS,
+            + session_context_tokens
+            + (settings.CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS if has_attachment else 0),
         )
         is_allowed, retry_after = await quota_manager.acquire(
             str(context.tenant_id),
@@ -115,19 +137,36 @@ class StreamingChatService:
         rpm_limit = limits["rpm_limit"]
         tpm_limit = limits["tpm_limit"]
 
-        # 1b. Nạp session memory ngắn trước khi đóng DB; chỉ để hiểu câu hỏi nối tiếp.
-        history_turns = await ChatHistoryService.list_recent_turns(
+        # 1b. Session memory do LLM trả về ở lượt trước; fallback nén lịch sử nếu chưa có.
+        memory_text = await ChatHistoryService.get_session_memory(
             db,
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             session_id=session_id,
-            limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
         )
-        history_text = ChatHistoryService.format_for_prompt(
-            history_turns,
-            settings.CHAT_HISTORY_CONTEXT_TOKENS,
+        history_turns = []
+        history_text = ""
+        if not memory_text:
+            history_turns = await ChatHistoryService.list_recent_turns(
+                db,
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                session_id=session_id,
+                limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
+            )
+            history_text = ChatHistoryService.format_for_prompt(
+                history_turns,
+                settings.CHAT_HISTORY_CONTEXT_TOKENS,
+                query=request.query,
+            )
+        session_context_text = memory_text or history_text
+        session_context_tokens = estimate_tokens(session_context_text) if session_context_text else 0
+        has_attachment = await ChatAttachmentService.has_active(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
         )
-        history_tokens = estimate_tokens(history_text) if history_text else 0
 
         if reserved_tokens is None:
             # Fallback khi generator được gọi trực tiếp (không qua endpoint pre-check)
@@ -136,7 +175,8 @@ class StreamingChatService:
                 request.max_context_tokens
                 + 160
                 + max(30, len(request.query) // 3)
-                + history_tokens,
+                + session_context_tokens
+                + (settings.CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS if has_attachment else 0),
             )
             is_allowed, retry_after = await quota_manager.acquire(
                 tenant_str,
@@ -166,13 +206,43 @@ class StreamingChatService:
                 return
 
         # 2. Tìm kiếm lai thật (FAISS mmap + PostgreSQL FTS + RRF) trong phạm vi ACL
+        # + tài liệu đính kèm private của chính user/session, dùng chung query embedding.
+        query_vector = await EmbeddingService.get_embedding(
+            request.query, task_type="RETRIEVAL_QUERY"
+        )
         search_req = SearchRequest(query=request.query, top_k=request.top_k, department_id=request.department_id)
         search_res = await SearchService.hybrid_search(
             db,
             context.tenant_id,
             search_req,
             allowed_department_ids=allowed_departments,
+            query_vector=query_vector,
         )
+        attachment_hits = await ChatAttachmentService.search(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            query_vector=query_vector,
+            top_k=min(3, request.top_k),
+        )
+        attachment_context, attachment_stats = await ChatAttachmentService.build_context(
+            request.query,
+            attachment_hits,
+            settings.CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS,
+        )
+        attachment_tokens = int(attachment_stats.get("attachment_tokens", 0) or 0)
+        used_attachment_ids = set(attachment_stats.get("retained_chunk_ids", []) or [])
+        attachment_sources = [
+            {
+                "attachment_id": str(hit.document_id),
+                "file_name": hit.document_title.removeprefix("Tài liệu đính kèm: "),
+                "chunk_id": str(hit.child_chunk_id),
+                "score": hit.rrf_score,
+            }
+            for hit in attachment_hits
+            if str(hit.child_chunk_id) in used_attachment_ids
+        ]
 
         # 3. Lọc ngữ cảnh 3 tầng (CPU-bound -> thread, không chặn event loop)
         filtered_context, stats = await asyncio.to_thread(
@@ -182,9 +252,16 @@ class StreamingChatService:
             max_chunks=min(request.top_k, 3),
             max_context_tokens=request.max_context_tokens,
         )
-        prompt_input_tokens = int(stats.get("prompt_input_tokens", 0) or 0) + history_tokens
-        stats["history_tokens"] = history_tokens
+        prompt_input_tokens = (
+            int(stats.get("prompt_input_tokens", 0) or 0)
+            + session_context_tokens
+            + attachment_tokens
+        )
+        stats["history_tokens"] = session_context_tokens if not memory_text else 0
         stats["history_turns"] = len(history_turns)
+        stats["session_memory_tokens"] = estimate_tokens(memory_text) if memory_text else 0
+        stats["attachment_tokens"] = attachment_tokens
+        stats["attachments_used"] = int(attachment_stats.get("attachment_chunks", 0) or 0)
         await quota_manager.reconcile_tokens(
             tenant_str,
             reserved_tokens=reserved_tokens,
@@ -237,36 +314,53 @@ class StreamingChatService:
         ]
         yield f"data: {json.dumps({'type': 'citations', 'data': citations_data}, ensure_ascii=False)}\n\n"
 
-        # 7. Phát luồng câu trả lời từ LLMService (hỗ trợ cả 'real' lẫn 'mock' / 'retrieval_only')
+        # 7. Phát luồng câu trả lời từ LLMService (hỗ trợ cả 'real' lẫn 'mock' / 'retrieval_only').
+        # SessionMemoryStreamFilter giữ khối <session_memory> ở lại server, không đẩy ra UI.
         streamed_chars = 0
         token_buffer: List[str] = []
         answer_parts: List[str] = []
         first_token_at: Optional[float] = None
         buffered_chars = 0
         last_flush = time.monotonic()
+        memory_filter = SessionMemoryStreamFilter()
+
+        def _remember_visible(piece: str) -> None:
+            nonlocal first_token_at, streamed_chars, buffered_chars
+            if not piece:
+                return
+            if first_token_at is None:
+                first_token_at = time.perf_counter()
+            answer_parts.append(piece)
+            streamed_chars += len(piece)
+            token_buffer.append(piece)
+            buffered_chars += len(piece)
+
         try:
-            async for token_piece in LLMService.stream_answer(
+            async for raw_piece in LLMService.stream_answer(
                 query=request.query,
                 context=filtered_context,
                 mode=request.mode,
                 history=history_text,
+                session_memory=memory_text,
+                attachment_context=attachment_context,
             ):
-                if first_token_at is None:
-                    first_token_at = time.perf_counter()
-                answer_parts.append(token_piece)
-                streamed_chars += len(token_piece)
-                token_buffer.append(token_piece)
-                buffered_chars += len(token_piece)
+                for token_piece in memory_filter.feed(raw_piece):
+                    _remember_visible(token_piece)
                 now = time.monotonic()
                 if buffered_chars >= _SSE_TOKEN_FLUSH_CHARS or (now - last_flush) >= _SSE_TOKEN_FLUSH_INTERVAL_SECONDS:
-                    chunk_text = "".join(token_buffer)
-                    token_buffer.clear()
-                    buffered_chars = 0
-                    last_flush = now
-                    yield f"data: {json.dumps({'type': 'token', 'content': chunk_text}, ensure_ascii=False)}\n\n"
+                    if token_buffer:
+                        chunk_text = "".join(token_buffer)
+                        token_buffer.clear()
+                        buffered_chars = 0
+                        last_flush = now
+                        yield f"data: {json.dumps({'type': 'token', 'content': chunk_text}, ensure_ascii=False)}\n\n"
 
+            for token_piece in memory_filter.finish():
+                _remember_visible(token_piece)
             if token_buffer:
                 yield f"data: {json.dumps({'type': 'token', 'content': ''.join(token_buffer)}, ensure_ascii=False)}\n\n"
+                token_buffer.clear()
+                buffered_chars = 0
         except Exception as exc:
             logger.error("Lỗi trong lúc stream LLM: %s", exc)
             await TelemetryService.record_event(
@@ -286,6 +380,20 @@ class StreamingChatService:
             err_payload = {"type": "error", "message": str(getattr(exc, "detail", exc))}
             yield f"data: {json.dumps(err_payload, ensure_ascii=False)}\n\n"
             return
+
+        # Session memory: ưu tiên khối model trả về; fallback extractive nếu model không tuân thủ.
+        new_memory = PromptService.truncate_session_memory(
+            memory_filter.memory_text,
+            settings.CHAT_SESSION_MEMORY_TOKENS,
+        )
+        if not new_memory:
+            new_memory = PromptService.build_fallback_memory(
+                request.query,
+                "".join(answer_parts),
+                settings.CHAT_SESSION_MEMORY_TOKENS,
+            )
+        # Memory cũng là output token của LLM, phải tính vào hạn mức TPM.
+        streamed_chars += len(new_memory)
 
         # Ghi nhận token đầu ra thực tế vào Token Bucket TPM
         output_tokens = max(0, streamed_chars // 4)
@@ -319,6 +427,10 @@ class StreamingChatService:
                         "savings_percent": stats.get("savings_percent", 0.0),
                         "retained_chunks": stats.get("retained_chunks", 0),
                         "history_turns": len(history_turns),
+                        "session_memory_tokens": stats.get("session_memory_tokens", 0),
+                        "attachment_tokens": attachment_tokens,
+                        "attachments_used": stats.get("attachments_used", 0),
+                        "has_attachment": bool(attachment_context),
                     },
                     persist=True,
                 )
@@ -341,6 +453,8 @@ class StreamingChatService:
                     compressed_tokens=stats.get("compressed_tokens", 0),
                     output_tokens=output_tokens,
                     compression_savings_percent=float(stats.get("savings_percent", 0.0)),
+                    session_memory=new_memory,
+                    has_attachment=bool(attachment_context),
                 )
                 await telemetry_db.commit()
         finally:
@@ -356,5 +470,9 @@ class StreamingChatService:
             "tokens_saved_percent": stats.get("savings_percent", 0.0),
             "retained_chunks": stats.get("retained_chunks", 0),
             "output_tokens": output_tokens,
+            "session_memory_tokens": stats.get("session_memory_tokens", 0),
+            "attachment_tokens": attachment_tokens,
+            "attachments_used": stats.get("attachments_used", 0),
+            "attachment_sources": attachment_sources,
         }
         yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"

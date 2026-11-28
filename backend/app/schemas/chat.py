@@ -44,6 +44,14 @@ class ChatQueryRequest(BaseModel):
         return stripped
 
 
+class ChatAttachmentCitation(BaseModel):
+    """Nguồn là tài liệu đính kèm riêng trong phiên chat (không phải kho tri thức tenant)."""
+    attachment_id: uuid.UUID
+    file_name: str
+    chunk_id: uuid.UUID
+    score: float
+
+
 class ChatQueryResponse(BaseModel):
     """Schema phản hồi câu trả lời hoàn chỉnh kèm chunks đã truy xuất, trích dẫn và thống kê nén token."""
     answer: str
@@ -51,9 +59,33 @@ class ChatQueryResponse(BaseModel):
     session_id: uuid.UUID
     retrieved_chunks: List[SearchResultItem] = []
     citations: List[ChatCitation]
+    attachment_sources: List[ChatAttachmentCitation] = []
     tokens_used: int
     compression_stats: Dict[str, Any]
     mode: str
+
+
+class ChatAttachmentResponse(BaseModel):
+    """Metadata file đính kèm chat; không trả nội dung/embedding ra API."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    session_id: uuid.UUID
+    file_name: str
+    title: str
+    file_type: str
+    file_size_bytes: int
+    token_count: int
+    chunk_count: int
+    status: str
+    expires_at: Any
+    created_at: Any
+
+
+class ChatAttachmentListResponse(BaseModel):
+    """Danh sách file đính kèm còn hiệu lực của session hiện tại."""
+    total: int
+    attachments: List[ChatAttachmentResponse]
 
 
 class ChatHistoryTurn(BaseModel):
@@ -75,6 +107,8 @@ class ChatHistoryTurn(BaseModel):
     compressed_tokens: int
     output_tokens: int
     compression_savings_percent: float
+    has_attachment: bool = False
+    session_memory: Optional[str] = None
     feedback_rating: Optional[str] = None
     created_at: Any
 

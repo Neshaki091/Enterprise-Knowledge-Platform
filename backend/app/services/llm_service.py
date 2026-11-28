@@ -96,12 +96,22 @@ class LLMService:
         return endpoint, headers, payload
 
     @classmethod
-    def _generate_mock_response(cls, query: str, context: str) -> str:
+    def _generate_mock_response(
+        cls,
+        query: str,
+        context: str,
+        attachment_context: Optional[str] = None,
+    ) -> str:
         """Sinh câu trả lời giả lập có trích dẫn chính xác dựa trên ngữ cảnh đã lọc."""
-        if not context.strip():
+        evidence = "\n\n".join(
+            block.strip()
+            for block in (attachment_context or "", context)
+            if block and block.strip()
+        )
+        if not evidence.strip():
             return "Xin lỗi, tôi không tìm thấy thông tin này trong tài liệu nội bộ của doanh nghiệp."
 
-        first_line = context.split("\n")[0].strip()
+        first_line = evidence.split("\n")[0].strip()
         if first_line.startswith("[Nguồn:") and "]" in first_line:
             source_name = first_line[len("[Nguồn:"):first_line.index("]")].strip()
         elif "[Tài liệu: " in first_line:
@@ -111,7 +121,7 @@ class LLMService:
 
         return (
             f"Dựa trên tài liệu quy chuẩn được cung cấp, câu hỏi '{query}' được giải đáp như sau:\n\n"
-            f"Nội dung quy định nêu rõ trong hồ sơ: {context[:300].strip()}...\n\n"
+            f"Nội dung quy định nêu rõ trong hồ sơ: {evidence[:300].strip()}...\n\n"
             f"📌 Trích dẫn chứng cứ: [Nguồn: {source_name}]."
         )
 
@@ -123,29 +133,52 @@ class LLMService:
         mode: str = "hybrid",
         transport: Optional[httpx.AsyncBaseTransport] = None,
         history: Optional[str] = None,
+        session_memory: Optional[str] = None,
+        attachment_context: Optional[str] = None,
     ) -> Tuple[str, int]:
         """Sinh câu trả lời đầy đủ (Non-streaming) theo chế độ yêu cầu."""
-        prompt = PromptService.build_rag_prompt(query, context, history or "")
-        estimated_input_tokens = len(prompt) // 4
+        prompt = PromptService.build_rag_prompt(
+            query,
+            context,
+            history or "",
+            session_memory=session_memory or "",
+            attachment_context=attachment_context or "",
+        )
+        estimated_input_tokens = PromptService.estimate_total_input_tokens(
+            query,
+            context,
+            history or "",
+            session_memory=session_memory or "",
+            attachment_context=attachment_context or "",
+        )
 
         if mode == "retrieval_only":
             return context, estimated_input_tokens
 
         elif mode == "mock":
             await asyncio.sleep(0.01)
-            answer = cls._generate_mock_response(query, context)
+            answer = cls._generate_mock_response(query, context, attachment_context)
             output_tokens = len(answer) // 4
             return answer, estimated_input_tokens + output_tokens
 
         elif mode == "hybrid":
             if not cls._is_real_configured():
-                return await cls.generate_answer(query, context, mode="mock", transport=transport, history=history)
+                return await cls.generate_answer(
+                    query, context, mode="mock", transport=transport, history=history,
+                    session_memory=session_memory, attachment_context=attachment_context,
+                )
             try:
-                return await cls.generate_answer(query, context, mode="real", transport=transport, history=history)
+                return await cls.generate_answer(
+                    query, context, mode="real", transport=transport, history=history,
+                    session_memory=session_memory, attachment_context=attachment_context,
+                )
             except HTTPException as exc:
                 if exc.status_code in (502, 503, 504):
                     logger.warning("Cloud LLM tạm thời quá tải (%s), chuyển sang fallback an toàn từ ngữ cảnh đã lọc.", exc.detail)
-                    return await cls.generate_answer(query, context, mode="mock", transport=transport, history=history)
+                    return await cls.generate_answer(
+                        query, context, mode="mock", transport=transport, history=history,
+                        session_memory=session_memory, attachment_context=attachment_context,
+                    )
                 raise
 
         elif mode == "real":
@@ -209,9 +242,17 @@ class LLMService:
         mode: str = "hybrid",
         transport: Optional[httpx.AsyncBaseTransport] = None,
         history: Optional[str] = None,
+        session_memory: Optional[str] = None,
+        attachment_context: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Async generator truyền từng token từ Cloud LLM API (kèm retry 503/429) hoặc Mock grounded stream."""
-        prompt = PromptService.build_rag_prompt(query, context, history or "")
+        prompt = PromptService.build_rag_prompt(
+            query,
+            context,
+            history or "",
+            session_memory=session_memory or "",
+            attachment_context=attachment_context or "",
+        )
 
         if mode == "retrieval_only":
             return
@@ -221,7 +262,7 @@ class LLMService:
             mode = "real" if cls._is_real_configured() else "mock"
 
         if mode == "mock":
-            answer = cls._generate_mock_response(query, context)
+            answer = cls._generate_mock_response(query, context, attachment_context)
             for word in answer.split():
                 yield word + " "
                 await asyncio.sleep(0.01)
@@ -302,6 +343,8 @@ class LLMService:
                 mode=fallback_mode,
                 transport=transport,
                 history=history,
+                session_memory=session_memory,
+                attachment_context=attachment_context,
             )
             for word in full_answer.split(" "):
                 if word:

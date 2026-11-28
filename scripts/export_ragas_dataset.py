@@ -2,6 +2,9 @@
 """
 Xuất dataset RAGAS theo tháng từ bảng `chat_turns`.
 
+Luôn loại lượt có tài liệu đính kèm chat private (`has_attachment = true`), kể cả
+khi dùng --include-mock, để nội dung file riêng của nhân viên không vào dataset chung.
+
 Script này CHỈ đọc dữ liệu và ghi JSONL.GZ; không cài RAGAS, không gọi LLM.
 Việc chấm điểm được thực hiện bên ngoài hệ thống (notebook/CLI RAGAS) bằng file xuất ra.
 
@@ -138,6 +141,8 @@ def _to_record(row: asyncpg.Record) -> Dict[str, Any]:
                 "output": row["output_tokens"],
                 "compression_savings_percent": row["compression_savings_percent"],
             },
+            "has_attachment": bool(row["has_attachment"]),
+            "session_memory": None if row["has_attachment"] else row["session_memory"],
             "feedback_rating": row["feedback_rating"],
         },
     }
@@ -174,6 +179,8 @@ async def export_month(
                 "created_at >= $1",
                 "created_at < $2",
                 "btrim(answer) <> ''",
+                # Không bao giờ đưa lượt dùng tài liệu đính kèm private vào dataset chung.
+                "has_attachment = false",
             ]
             params: List[Any] = [start, end]
             if tenant_id:
@@ -191,7 +198,8 @@ async def export_month(
                        query, answer, contexts, citations, chunk_ids, llm_context,
                        model_name, mode, latency_ms, ttfb_ms,
                        input_tokens, compressed_tokens, output_tokens,
-                       compression_savings_percent, feedback_rating, created_at
+                       compression_savings_percent, has_attachment, session_memory,
+                       feedback_rating, created_at
                   FROM chat_turns
                  WHERE {' AND '.join(conditions)}
                  ORDER BY created_at, id

@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     # Số lượt gần nhất được đưa vào prompt làm session memory (không phải nguồn chứng cứ).
     CHAT_HISTORY_CONTEXT_TURNS: int = Field(default=3, ge=1, le=10)
     CHAT_HISTORY_CONTEXT_TOKENS: int = Field(default=500, ge=100, le=1500)
+    # Session memory do chính lượt LLM trả về (cùng một call), tối đa ~300 token.
+    CHAT_SESSION_MEMORY_TOKENS: int = Field(default=300, ge=100, le=600)
+
+    # Tài liệu đính kèm trong chat (ephemeral, chỉ owner + session, có TTL, KHÔNG vào FAISS).
+    CHAT_ATTACHMENT_ENABLED: bool = True
+    CHAT_ATTACHMENT_TTL_HOURS: int = Field(default=24, ge=1, le=168)
+    CHAT_ATTACHMENT_MAX_FILES: int = Field(default=3, ge=1, le=10)
+    CHAT_ATTACHMENT_MAX_ACTIVE_PER_USER: int = Field(default=10, ge=1, le=50)
+    # Trần xử lý song song trên e2-micro 1 GB: tránh 10 file lớn cùng parse/embed.
+    CHAT_ATTACHMENT_MAX_CONCURRENT_UPLOADS: int = Field(default=2, ge=1, le=5)
+    CHAT_ATTACHMENT_MAX_CHUNKS: int = Field(default=120, ge=1, le=500)
+    CHAT_ATTACHMENT_MAX_SIZE_BYTES: int = Field(default=8 * 1024 * 1024, ge=1024)
+    CHAT_ATTACHMENT_MAX_CONTEXT_TOKENS: int = Field(default=300, ge=100, le=800)
 
     # Database
     POSTGRES_SERVER: str = "localhost"

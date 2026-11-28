@@ -19,12 +19,24 @@ class PromptService:
         "QUY TẮC BẮT BUỘC (FAIL-CLOSED):\n"
         "0. CHỈ xuất câu trả lời cuối cùng. KHÔNG lặp lại câu hỏi, KHÔNG liệt kê context/constraints, "
         "KHÔNG mô tả quá trình suy luận hay tự đánh giá định dạng. KHÔNG lặp lại cùng một câu hoặc cùng một ý.\n"
-        "1. CHỈ dùng thông tin trong thẻ <context>. Cấm dùng kiến thức ngoài hay suy diễn. "
-        "Lịch sử hội thoại (nếu có) chỉ để hiểu câu hỏi nối tiếp, KHÔNG phải nguồn chứng cứ.\n"
+        "1. CHỈ dùng thông tin trong thẻ <context> và <attachments>. Cấm dùng kiến thức ngoài hay suy diễn. "
+        "Session memory chỉ để hiểu câu hỏi nối tiếp, KHÔNG phải nguồn chứng cứ.\n"
         "2. Mọi luận điểm/con số phải trích dẫn: [Nguồn: <Tên tài liệu>, Phân mục: <Tên phân mục>].\n"
-        "3. Nếu <context> không đủ thông tin, BẮT BUỘC trả lời đúng câu sau: "
-        "'Xin lỗi, tôi không tìm thấy thông tin này trong tài liệu nội bộ của doanh nghiệp.'"
+        "3. Nếu <context>/<attachments> không đủ thông tin, BẮT BUỘC trả lời đúng câu sau: "
+        "'Xin lỗi, tôi không tìm thấy thông tin này trong tài liệu nội bộ của doanh nghiệp.'\n"
+        "4. Sau câu trả lời, BẮT BUỘC thêm đúng một khối <session_memory>...</session_memory> "
+        "chứa tóm tắt ≤ 250 token về thực thể, con số, ràng buộc, mục tiêu người dùng và điều đã trả lời. "
+        "Khối này là metadata cho lượt sau, KHÔNG hiển thị cho người dùng, KHÔNG thêm kiến thức ngoài."
     )
+
+    SESSION_MEMORY_OPEN = "<session_memory>"
+    SESSION_MEMORY_CLOSE = "</session_memory>"
+    _SESSION_MEMORY_RE = re.compile(
+        r"<session_memory>(.*?)</session_memory>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _SESSION_MEMORY_OPEN_RE = re.compile(r"<session_memory>", re.IGNORECASE)
+    _SESSION_MEMORY_MAX_BUFFER = 20000
 
     # Các nhãn xuất hiện khi model tự diễn lại prompt/self-check thay vì trả lời.
     _REASONING_START = re.compile(
@@ -43,21 +55,128 @@ class PromptService:
     )
 
     @classmethod
-    def build_rag_prompt(cls, query: str, context: str, history: str = "") -> str:
-        """Ghép lịch sử hội thoại ngắn, context đã nén và câu hỏi vào prompt tiết kiệm token."""
+    def build_rag_prompt(
+        cls,
+        query: str,
+        context: str,
+        history: str = "",
+        session_memory: str = "",
+        attachment_context: str = "",
+    ) -> str:
+        """
+        Ghép session memory, context đã nén, tài liệu đính kèm và câu hỏi.
+
+        Session memory là bản tóm tắt do chính lượt LLM trước trả về; history là
+        fallback cho session cũ chưa có memory. Cả hai đều không phải chứng cứ.
+        """
         history = (history or "").strip()
+        session_memory = (session_memory or "").strip()
+        attachment_context = (attachment_context or "").strip()
+
         history_block = f"<conversation>\n{history}\n</conversation>\n\n" if history else ""
+        memory_block = (
+            f"<previous_session_memory>\n{session_memory}\n</previous_session_memory>\n\n"
+            if session_memory
+            else ""
+        )
+        attachment_block = (
+            f"<attachments>\n{attachment_context}\n</attachments>\n\n"
+            if attachment_context
+            else ""
+        )
         return (
-            f"{history_block}<context>\n{context}\n</context>\n\n"
+            f"{memory_block}{history_block}{attachment_block}<context>\n{context}\n</context>\n\n"
             f"Câu hỏi: {query}\n"
-            f"Trả lời trực tiếp (không lặp lại hướng dẫn), ngắn gọn, kèm trích dẫn:"
+            f"Trả lời trực tiếp (không lặp lại hướng dẫn), ngắn gọn, kèm trích dẫn.\n"
+            f"Sau câu trả lời, thêm đúng một khối <session_memory>...</session_memory> "
+            f"tóm tắt ≤ 250 token cho lượt sau:"
         )
 
     @classmethod
-    def estimate_total_input_tokens(cls, query: str, context: str, history: str = "") -> int:
-        """Ước lượng tổng số token đầu vào (System Prompt + History + Context + Query wrapper)."""
-        rag_prompt = cls.build_rag_prompt(query, context, history)
+    def estimate_total_input_tokens(
+        cls,
+        query: str,
+        context: str,
+        history: str = "",
+        session_memory: str = "",
+        attachment_context: str = "",
+    ) -> int:
+        """Ước lượng tổng token đầu vào (System Prompt + memory/history + context + query)."""
+        rag_prompt = cls.build_rag_prompt(
+            query,
+            context,
+            history,
+            session_memory=session_memory,
+            attachment_context=attachment_context,
+        )
         return estimate_tokens(cls.SYSTEM_PROMPT) + estimate_tokens(rag_prompt)
+
+    @classmethod
+    def truncate_session_memory(cls, text: str, max_tokens: int = 300) -> str:
+        """Chuẩn hóa và cắt session memory theo ngân sách token cứng."""
+        cleaned = re.sub(r"\s+", " ", (text or "").strip())
+        cleaned = re.sub(r"</?session_memory>", "", cleaned, flags=re.IGNORECASE).strip()
+        if not cleaned:
+            return ""
+        if estimate_tokens(cleaned) <= max_tokens:
+            return cleaned
+        words = cleaned.split()
+        kept: List[str] = []
+        for word in words:
+            candidate = " ".join([*kept, word])
+            if estimate_tokens(candidate) > max_tokens:
+                break
+            kept.append(word)
+        clipped = " ".join(kept).rstrip(" ,;:-")
+        with_ellipsis = clipped + "..."
+        if estimate_tokens(with_ellipsis) <= max_tokens:
+            return with_ellipsis
+        return clipped
+
+    @classmethod
+    def split_answer_and_memory(
+        cls,
+        text: str,
+        max_memory_tokens: int = 300,
+    ) -> tuple[str, str]:
+        """
+        Tách câu trả lời hiển thị khỏi khối <session_memory> (nếu model trả kèm).
+
+        Nếu model mở thẻ nhưng không đóng, coi phần sau thẻ là memory để tránh lộ
+        nội dung metadata ra UI.
+        """
+        raw = text or ""
+        memory = ""
+        match = cls._SESSION_MEMORY_RE.search(raw)
+        if match:
+            memory = match.group(1)
+            raw = raw[: match.start()] + raw[match.end():]
+        else:
+            unclosed = cls._SESSION_MEMORY_OPEN_RE.search(raw)
+            if unclosed:
+                memory = raw[unclosed.end():]
+                raw = raw[: unclosed.start()]
+        return (
+            cls.sanitize_answer(raw),
+            cls.truncate_session_memory(memory, max_memory_tokens),
+        )
+
+    @classmethod
+    def build_fallback_memory(
+        cls,
+        query: str,
+        answer: str,
+        max_tokens: int = 300,
+    ) -> str:
+        """
+        Memory dự phòng khi model không trả khối session_memory (mock/retrieval_only
+        hoặc model không tuân thủ). Extractive, không gọi thêm LLM.
+        """
+        cleaned = cls.sanitize_answer(answer)
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", cleaned) if s.strip()]
+        key_sentences = sentences[:3]
+        memory = f"Câu hỏi trước: {query.strip()}\nĐã trả lời: " + " ".join(key_sentences)
+        return cls.truncate_session_memory(memory, max_tokens)
 
     @classmethod
     def sanitize_answer(cls, text: str) -> str:
@@ -230,3 +349,90 @@ class ReasoningStreamSanitizer:
         self._buffer = ""
         self._mode = "pass"
         return [out] if out else []
+
+
+class SessionMemoryStreamFilter:
+    """
+    Tách khối <session_memory> khỏi luồng token trước khi gửi UI.
+
+    Model được yêu cầu trả câu trả lời trước, rồi mới đến memory. Filter giữ lại
+    tối đa một hậu tố có thể là phần đầu của thẻ mở để bắt thẻ bị chia qua nhiều
+    token; khi đã vào memory thì không phát token ra UI nữa.
+    """
+
+    OPEN = PromptService.SESSION_MEMORY_OPEN
+    CLOSE = PromptService.SESSION_MEMORY_CLOSE
+    _MAX_BUFFER = PromptService._SESSION_MEMORY_MAX_BUFFER
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._memory = ""
+        self._capturing = False
+        self._finished = False
+
+    @staticmethod
+    def _partial_suffix_length(text: str, tag: str) -> int:
+        """Độ dài hậu tố của `text` có thể là phần đầu của `tag` (để chờ token tiếp)."""
+        lower_text = text.lower()
+        lower_tag = tag.lower()
+        for length in range(min(len(lower_tag) - 1, len(lower_text)), 0, -1):
+            if lower_text.endswith(lower_tag[:length]):
+                return length
+        return 0
+
+    def feed(self, piece: str) -> List[str]:
+        if not piece or self._finished:
+            return []
+        self._pending += piece
+        emitted: List[str] = []
+
+        if not self._capturing:
+            open_idx = self._pending.lower().find(self.OPEN)
+            if open_idx < 0:
+                keep = self._partial_suffix_length(self._pending, self.OPEN)
+                if keep:
+                    emitted.append(self._pending[:-keep])
+                    self._pending = self._pending[-keep:]
+                else:
+                    emitted.append(self._pending)
+                    self._pending = ""
+                return [item for item in emitted if item]
+
+            if open_idx > 0:
+                emitted.append(self._pending[:open_idx])
+            self._pending = self._pending[open_idx + len(self.OPEN):]
+            self._capturing = True
+
+        if self._capturing:
+            close_idx = self._pending.lower().find(self.CLOSE)
+            if close_idx < 0:
+                if len(self._pending) > self._MAX_BUFFER:
+                    # Fail-safe: model không đóng thẻ; giữ phần đầu làm memory và dừng.
+                    self._memory = self._pending[: self._MAX_BUFFER]
+                    self._pending = ""
+                    self._finished = True
+                return [item for item in emitted if item]
+            self._memory = (self._memory + self._pending[:close_idx]).strip()
+            self._pending = self._pending[close_idx + len(self.CLOSE):]
+            self._finished = True
+            return [item for item in emitted if item]
+
+        return [item for item in emitted if item]
+
+    def finish(self) -> List[str]:
+        if self._finished:
+            return []
+        if not self._capturing:
+            out = self._pending
+            self._pending = ""
+            self._finished = True
+            return [out] if out else []
+        # Thẻ mở nhưng không đóng: coi phần còn lại là memory, không phát ra UI.
+        self._memory = (self._memory + self._pending).strip()
+        self._pending = ""
+        self._finished = True
+        return []
+
+    @property
+    def memory_text(self) -> str:
+        return self._memory.strip()

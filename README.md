@@ -18,6 +18,8 @@ EKP giúp nhân viên hỏi đáp tài liệu nội bộ bằng ngôn ngữ tự
 - **Hybrid Search + RRF** — hợp nhất tìm kiếm vector (FAISS) và từ khóa toàn văn (PostgreSQL FTS) bằng Reciprocal Rank Fusion.
 - **Context Filtering 3 tầng** — Dynamic Thresholding → Deduplication → Sentence Compression, giảm 60–70% token đầu vào để nằm trong hạn mức 16K TPM cấu hình cho LLM.
 - **RAG streaming SSE** — trả citations trước, sau đó stream từng token; Nginx tắt `proxy_buffering` để TTFT thấp.
+- **Session memory 300 token** — chính lượt LLM trả về bản tóm tắt phiên trong cùng một call, bắt đầu từ câu hỏi đầu tiên; lượt sau đọc lại memory thay vì nhồi raw history.
+- **Tài liệu đính kèm riêng trong chat** — file chỉ thuộc owner + session, lưu chunk/embedding trong PostgreSQL với TTL, **không** ghi FAISS và không vào kho tri thức chung; đồng nghiệp/tenant khác không truy xuất được.
 - **MCP Server tự viết** — công cụ `search_knowledge_base`, `get_document_context` cho Claude Desktop, có kiểm tra tenant/ACL và bound `top_k`.
 - **Frontend 3 tầng vai trò** — Workspace (nhân viên), Tenant Admin, Platform Admin; dashboard realtime qua SSE.
 - **Vận hành $0** — Nginx TLS + Let's Encrypt trên e2-micro, SPA tĩnh trên Vercel Hobby, DuckDNS cho tên miền động.
@@ -131,7 +133,7 @@ npm run build      # typecheck + build production
 ## Kiểm thử
 
 ```bash
-# Backend: 66 test, SQLite in-memory, không gọi AI API
+# Backend: 80 test, SQLite in-memory, không gọi AI API
 python -m pytest backend/tests -v
 
 # Frontend E2E (cần stack đang chạy)
@@ -154,16 +156,31 @@ python endpoint_test/run_all_endpoint_tests.py
   snapshot context, chunk IDs, citations, model, latency, token.
 - Frontend giữ `session_id` trong localStorage theo tenant/user: reload trang tự nạp lại
   các lượt cũ qua `GET /api/v1/chat/history?session_id=...`.
-- **Session memory:** tối đa 3 lượt gần nhất (`CHAT_HISTORY_CONTEXT_TURNS`) và 500 token
-  (`CHAT_HISTORY_CONTEXT_TOKENS`) được đưa vào prompt để hiểu câu hỏi nối tiếp; lịch sử
-  không phải nguồn chứng cứ.
+- **Session memory:** ngay từ lượt đầu, LLM trả kèm khối `<session_memory>` (~300 token)
+  trong **cùng một call**; backend tách khối này khỏi câu trả lời, lưu vào `chat_turns.session_memory`
+  và đưa lại vào lượt sau. Memory chỉ để hiểu câu hỏi nối tiếp, không phải chứng cứ.
+  Session cũ/mock chưa có memory sẽ fallback nén extractive 3 lượt gần nhất
+  (`CHAT_HISTORY_CONTEXT_TURNS`, `CHAT_HISTORY_CONTEXT_TOKENS`).
 - **Hoàn tác lượt cuối:** `POST /api/v1/chat/rollback` xoá lượt gần nhất của phiên
-  (chỉ của chính user), đồng thời loại khỏi session memory và dataset RAGAS.
+  (chỉ của chính user); memory tự quay về bản của lượt trước và lượt đó cũng biến mất
+  khỏi dataset RAGAS.
+- **Tài liệu đính kèm chat:** `POST /api/v1/chat/attachments` (multipart, kèm `session_id`),
+  `GET /api/v1/chat/attachments`, `DELETE /api/v1/chat/attachments/{id}`. Chỉ owner + session
+  đọc được; admin tenant cũng không đọc qua API attachment. File có TTL
+  (`CHAT_ATTACHMENT_TTL_HOURS`, mặc định 24h), tối đa 3 file/phiên và 10 file còn hạn/user.
+  Tối đa 2 upload xử lý song song (`CHAT_ATTACHMENT_MAX_CONCURRENT_UPLOADS`) để 10 người
+  upload cùng lúc không làm OOM backend 350 MB; các request còn lại xếp hàng.
+  Chunk + embedding lưu trong PostgreSQL, **không ghi FAISS**; chat tự tìm cosine trong đúng
+  tập chunk của phiên nên không làm bẩn index tenant và không cần file index theo user.
+  Lượt chat có attachment được đánh dấu `has_attachment` và **loại khỏi export RAGAS**.
+  Dọn file hết hạn bằng `scripts/prune_chat_attachments.py` (cron 15–60 phút/lần).
 - Xuất dataset theo tháng để chấm RAGAS **bên ngoài** hệ thống: nút **Xuất JSONL.GZ**
   trong Quản trị doanh nghiệp (OWNER/ADMIN), hoặc CLI
   `scripts/export_ragas_dataset.py`; hướng dẫn tại
   [`scripts/README_ragas_export.md`](scripts/README_ragas_export.md).
 - File export **nén gzip** (`.jsonl.gz`), mặc định bỏ lượt `mock`/`retrieval_only`.
+- Mỗi record có `metadata.has_attachment` và `metadata.session_memory` để phân tích multi-turn;
+  memory **không** được đưa vào `retrieved_contexts` và không phải chứng cứ.
 - Backend **không cài RAGAS** và không chạy evaluator; file export chứa nội dung
   hội thoại nên không commit. Retention tối đa 365 ngày
   (`CHAT_HISTORY_RETENTION_DAYS`), dọn bằng `scripts/prune_chat_history.py`;
@@ -221,7 +238,9 @@ Các luồng gọi Google AI thật không nằm trong lần đo này (không d�
 - **Tối thiểu bề mặt:** backend không publish cổng ra host; chỉ Nginx 80/443; Swagger tắt ở production.
 - **Chat trace có kiểm soát:** `chat_turns` có RLS theo tenant, retention tối đa 365 ngày,
   prune bằng script local, tắt được bằng `CHAT_HISTORY_ENABLED=false`; file export RAGAS
-  (`.jsonl.gz`) không commit.
+  (`.jsonl.gz`) không commit và **luôn loại lượt có tài liệu đính kèm private**.
+- **Tài liệu đính kèm chat:** RLS tenant + lọc owner/session ở mọi truy vấn; không ghi FAISS;
+  TTL ngắn và giới hạn số file/user; nội dung không xuất hiện trong RAGAS export.
 - **Dữ liệu nhạy cảm:** không lưu file gốc; không commit `.env`, token, chứng chỉ hay báo cáo test.
 
 Nếu phát hiện lỗ hổng, vui lòng mở issue riêng tư hoặc liên hệ chủ sở hữu thay vì công khai chi tiết khai thác.

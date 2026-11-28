@@ -51,7 +51,7 @@ Mỗi dòng JSON:
     "tenant_id": "...",
     "chunk_ids": ["..."],
     "citations": [],
-    "model": "gemma-4-26b-a4b-it",
+    "model": "gemini-3.5-flash-lite",
     "mode": "hybrid",
     "created_at": "...",
     "llm_context": "ngữ cảnh đã nén gửi tới LLM",
@@ -59,6 +59,8 @@ Mỗi dòng JSON:
     "latency_ms": 0,
     "ttfb_ms": 0,
     "tokens": {},
+    "has_attachment": false,
+    "session_memory": "Câu hỏi trước: ... Đã trả lời: ...",
     "feedback_rating": null
   }
 }
@@ -68,7 +70,14 @@ Mỗi dòng JSON:
 - `llm_context` là phần ngữ cảnh sau bộ lọc 3 tầng thực sự gửi cho LLM; `retrieved_context_count` giúp kiểm tra số chunk.
 - `chunk_ids` và `citations` nằm trong `metadata` để truy vết; RAGAS chỉ cần 3 trường đầu.
 - Mặc định file export đã bỏ `mock`/`retrieval_only`. Nếu tự bật `--include-mock`, lọc thêm `metadata.mode` trước khi chấm.
+- **Luôn loại bỏ lượt có tài liệu đính kèm chat private** (`chat_turns.has_attachment = true`),
+  kể cả khi bật `--include-mock`; nội dung file riêng của nhân viên không được đưa vào dataset chung.
 - `reference` để `null` vì hệ thống không có ground truth. Khi chấm, dùng các metric không cần reference trước; nếu có bộ câu hỏi chuẩn thì bổ sung `reference` bên ngoài.
+- `metadata.session_memory` là bản tóm tắt phiên do LLM trả về ở lượt đó, **không** nằm trong
+  `retrieved_contexts` và không phải chứng cứ. Dùng nó để phân tích multi-turn hoặc tách
+  follow-up khỏi tập single-turn; đừng đưa vào context khi chấm `faithfulness`.
+- `metadata.has_attachment` luôn `false` trong file export hiện tại vì mọi lượt dùng file
+  đính kèm private đã bị loại từ SQL; trường này giữ để schema minh bạch và phòng thủ nhiều lớp.
 
 ## Dọn dữ liệu cũ (retention tối đa 1 năm)
 
@@ -96,6 +105,31 @@ Có thể đặt cron chạy hằng tháng sau khi đã export tháng cũ; ví d
 # 03:00 ngày 1 mỗi tháng, ghi log local
 0 3 1 * * docker exec saas_fastapi_backend python /app/scripts/prune_chat_history.py >> /var/log/ekp_prune.log 2>&1
 ```
+
+## Dọn tài liệu đính kèm chat hết TTL
+
+File đính kèm chat có TTL ngắn (mặc định 24h, tối đa 168h), nên job này chạy thường xuyên
+hơn prune `chat_turns`:
+
+```bash
+# Đếm file hết hạn, không xoá
+sudo docker exec saas_fastapi_backend \
+  python /app/scripts/prune_chat_attachments.py --dry-run
+
+# Xoá thật (batch 500), chunk + embedding bị xoá cascade
+sudo docker exec saas_fastapi_backend \
+  python /app/scripts/prune_chat_attachments.py --batch-size 500
+```
+
+Cron gợi ý mỗi 30 phút:
+
+```bash
+*/30 * * * * docker exec saas_fastapi_backend python /app/scripts/prune_chat_attachments.py >> /var/log/ekp_attachments.log 2>&1
+```
+
+Script chỉ chạm PostgreSQL local, không gọi API/LLM; egress không đáng kể. Nếu bỏ job này,
+API vẫn lọc `expires_at > now()` nên file hết hạn không được dùng, nhưng dữ liệu sẽ nằm lại
+trong DB cho đến khi prune.
 
 ## Lưu ý
 

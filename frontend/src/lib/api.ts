@@ -3,6 +3,8 @@
 import { downloadFile, request } from "./api-client";
 import type {
   BusinessAdminDashboard,
+  ChatAttachment,
+  ChatAttachmentListResponse,
   ChatFeedbackCreate,
   ChatFeedbackResponse,
   ChatHistoryResponse,
@@ -167,6 +169,25 @@ export const chatApi = {
     }),
   feedback: (payload: ChatFeedbackCreate): Promise<ChatFeedbackResponse> =>
     request<ChatFeedbackResponse>("/api/v1/chat/feedback", { method: "POST", body: payload }),
+  attachments: (sessionId: string): Promise<ChatAttachmentListResponse> =>
+    request<ChatAttachmentListResponse>(
+      withQuery("/api/v1/chat/attachments", { session_id: sessionId }),
+    ),
+  uploadAttachment: (sessionId: string, file: File, title?: string): Promise<ChatAttachment> => {
+    const formData = new FormData();
+    formData.append("session_id", sessionId);
+    formData.append("file", file, file.name);
+    if (title?.trim()) formData.append("title", title.trim());
+    return request<ChatAttachment>("/api/v1/chat/attachments", {
+      method: "POST",
+      formData,
+    });
+  },
+  deleteAttachment: (attachmentId: string): Promise<{ deleted: boolean; attachment_id: string }> =>
+    request<{ deleted: boolean; attachment_id: string }>(
+      `/api/v1/chat/attachments/${attachmentId}`,
+      { method: "DELETE" },
+    ),
   exportRagas: (month: string, includeMock = false): Promise<void> =>
     downloadFile(
       withQuery("/api/v1/chat/export", {

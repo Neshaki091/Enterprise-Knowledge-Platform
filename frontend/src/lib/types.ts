@@ -148,12 +148,39 @@ export interface CompressionStats {
   [key: string]: unknown;
 }
 
+export interface ChatAttachmentCitation {
+  attachment_id: string;
+  file_name: string;
+  chunk_id: string;
+  score: number;
+}
+
+export interface ChatAttachment {
+  id: string;
+  session_id: string;
+  file_name: string;
+  title: string;
+  file_type: string;
+  file_size_bytes: number;
+  token_count: number;
+  chunk_count: number;
+  status: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface ChatAttachmentListResponse {
+  total: number;
+  attachments: ChatAttachment[];
+}
+
 export interface ChatQueryResponse {
   answer: string;
   query: string;
   session_id: string;
   retrieved_chunks: SearchResultItem[];
   citations: ChatCitation[];
+  attachment_sources?: ChatAttachmentCitation[];
   tokens_used: number;
   compression_stats: CompressionStats;
   mode: string;
@@ -193,6 +220,10 @@ export interface ChatStreamDone {
   retained_chunks: number;
   output_tokens: number;
   session_id?: string;
+  session_memory_tokens?: number;
+  attachment_tokens?: number;
+  attachments_used?: number;
+  attachment_sources?: ChatAttachmentCitation[];
 }
 
 export interface ChatHistoryTurn {
@@ -211,6 +242,8 @@ export interface ChatHistoryTurn {
   compressed_tokens: number;
   output_tokens: number;
   compression_savings_percent: number;
+  has_attachment?: boolean;
+  session_memory?: string | null;
   feedback_rating: "THUMBS_UP" | "THUMBS_DOWN" | null;
   created_at: string;
 }

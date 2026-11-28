@@ -15,6 +15,7 @@ import asyncio
 import re
 import uuid
 from typing import FrozenSet, List, Dict, Any, Optional, Tuple
+import numpy as np
 from fastapi import HTTPException, status
 from sqlalchemy import select, or_, func
 from sqlalchemy.orm import selectinload
@@ -112,8 +113,13 @@ class SearchService:
         tenant_id: uuid.UUID,
         request: SearchRequest,
         allowed_department_ids: Optional[FrozenSet[uuid.UUID]] = None,
+        query_vector: Optional[np.ndarray] = None,
     ) -> SearchResponse:
-        """Thực thi tìm kiếm lai: dense embedding và sparse FTS chạy song song."""
+        """Thực thi tìm kiếm lai: dense embedding và sparse FTS chạy song song.
+
+        `query_vector` cho phép tái dùng embedding đã tính (ví dụ để tìm cả tài liệu
+        đính kèm trong chat), tránh gọi Embedding API hai lần cho cùng câu hỏi.
+        """
         if (
             request.department_id is not None
             and allowed_department_ids is not None
@@ -126,18 +132,24 @@ class SearchService:
 
         # 1. DENSE (embedding API) + SPARSE (PostgreSQL FTS) SONG SONG.
         # Embedding là network I/O, FTS là DB I/O; gộp lại để latency = max thay vì sum.
-        embedding_task = asyncio.create_task(
-            EmbeddingService.get_embedding(request.query, task_type="RETRIEVAL_QUERY")
-        )
-        sparse_task = asyncio.create_task(
-            cls._sparse_search(db, tenant_id, request, allowed_department_ids)
-        )
-        gathered = await asyncio.gather(embedding_task, sparse_task, return_exceptions=True)
-        for outcome in gathered:
-            if isinstance(outcome, BaseException):
-                raise outcome
-        query_vector = gathered[0]
-        sparse_chunk_results = gathered[1]
+        if query_vector is None:
+            embedding_task = asyncio.create_task(
+                EmbeddingService.get_embedding(request.query, task_type="RETRIEVAL_QUERY")
+            )
+            sparse_task = asyncio.create_task(
+                cls._sparse_search(db, tenant_id, request, allowed_department_ids)
+            )
+            gathered = await asyncio.gather(embedding_task, sparse_task, return_exceptions=True)
+            for outcome in gathered:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            query_vector = gathered[0]
+            sparse_chunk_results = gathered[1]
+        else:
+            # Caller đã có vector (dùng chung cho attachment); chỉ cần chạy FTS.
+            sparse_chunk_results = await cls._sparse_search(
+                db, tenant_id, request, allowed_department_ids
+            )
 
         # 2. DENSE SEARCH (FAISS mmap/IVF-PQ) + ánh xạ faiss_id -> child_chunk_id.
         # Mở rộng tập ứng viên khi có lọc phòng ban để tránh rớt kết quả trước khi cắt top_k.
