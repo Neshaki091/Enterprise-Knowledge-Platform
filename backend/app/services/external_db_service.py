@@ -7,6 +7,7 @@ Service quản lý kết nối DB riêng của doanh nghiệp theo mô hình Zer
 - Bộ lọc SQL Read-Only nghiêm ngặt: chỉ cho phép `SELECT`, kiểm tra `allowed_tables`, giới hạn 50 dòng.
 """
 
+import asyncio
 import os
 import re
 import uuid
@@ -300,15 +301,24 @@ class ExternalDBService:
 
         connect_args: Dict[str, Any] = {"statement_cache_size": 0} if "asyncpg" in dsn else {}
         ext_engine = create_async_engine(dsn, echo=False, pool_pre_ping=True, connect_args=connect_args)
-        try:
+
+        async def _run_query() -> List[Dict[str, Any]]:
             async with ext_engine.connect() as conn:
                 res = await conn.execute(text(safe_sql))
-                rows = [dict(r._mapping) for r in res.fetchmany(cls.MAX_ROWS)]
-                return {
-                    "connector_id": str(connector.id),
-                    "connector_name": connector.name,
-                    "row_count": len(rows),
-                    "rows": rows,
-                }
+                return [dict(r._mapping) for r in res.fetchmany(cls.MAX_ROWS)]
+
+        try:
+            rows = await asyncio.wait_for(_run_query(), timeout=cls.QUERY_TIMEOUT_SEC)
+            return {
+                "connector_id": str(connector.id),
+                "connector_name": connector.name,
+                "row_count": len(rows),
+                "rows": rows,
+            }
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Truy vấn DB ngoài vượt quá giới hạn {cls.QUERY_TIMEOUT_SEC}s.",
+            )
         finally:
             await ext_engine.dispose()

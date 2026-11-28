@@ -274,3 +274,9 @@ Các bài trong thư mục này tương ứng:
 
 Báo cáo nên lưu số tổng hợp (không chứa email/token/nội dung thật) vào
 `load_tests/reports/` và chỉ commit bản tổng hợp đã làm sạch nếu cần.
+
+## 13. Đọc và cải thiện kết quả
+
+Xem [how_eval.md](../how_eval.md): ngưỡng pass/fail từng bài, phân biệt 429 ứng dụng /
+503 Nginx / 5xx, cách đọc p95–RSS–DB pool, bảng triệu chứng → hành động cải thiện và
+cách tách kết luận load test khỏi Phase 3/RAGAS.

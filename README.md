@@ -156,6 +156,9 @@ Windows: double-click `run_load_tests.cmd` (load/soak/stress) hoặc
 `run_phase3_ux_sim.cmd` (UX simulation) ở thư mục gốc repo. Hai file tự dùng
 `.venv`, kiểm tra backend/k6 và cảnh báo trước khi chạy vào target không phải local.
 
+Cách đọc kết quả, đặt ngưỡng pass/fail và cải thiện load/Phase 3:
+[`how_eval.md`](how_eval.md).
+
 ---
 
 ## Lưu trace hội thoại & xuất RAGAS

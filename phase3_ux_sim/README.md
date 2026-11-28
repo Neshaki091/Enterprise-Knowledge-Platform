@@ -12,9 +12,10 @@ Công cụ độc lập phục vụ **Phase 3 (Sprint 9)** để:
 - Đã commit đủ bộ module + workflow thủ công `.github/workflows/phase3-ux-sim.yml` (schedule đang tắt) tại commit `43e0f2e`.
 - **Lần chạy live đầu tiên** (2026-11-26, target backend production): seed 5 user, 3 user hoạt động, 11 hành động; 0 lỗi 5xx, 0 lần 429; search P95 `1.180 ms`; egress `14,68 KB`.
 - **Chạy local quick trên backend 2.6.0** (2026-11-28): seed 20 user/2 tenant, 5 active, 15 hành động (100%), search P95 `501 ms`, 0 lần 429; MCP PASS (SELECT 3 dòng, chặn DROP TABLE); egress `24,64 KB`. Telemetry dùng SQLite riêng theo target (`sim_target_<hash>.db`) do chưa cấu hình `SUPABASE_DB_URL`.
+- **Chạy local standard/full trên pool 100 user/10 tenant** (2026-11-28): standard 20 active/4 bước — 68 hành động (100%), search P95 `812 ms`, 1 chat `18,26 s`, egress `98,26 KB`; full 100 active/4 bước/50 query — 336 hành động (100%), search P95 `1.076 ms`, 4 chat P50/P95 `15,44/17,87 s`, TTFT `388,6 ms`, nén context `19,8%`, MCP PASS `8,05 s`, egress `560,37 KB`; 0 lỗi 429/5xx. Chat sample còn nhỏ (4 lượt), chưa đủ kết luận chất lượng RAG.
 - **MCP Zero-Knowledge: PASS** vào PostgreSQL/Supabase DB dự án cũ — SELECT `documents` trả 3 dòng, `DROP TABLE` bị chặn (latency `8,1 s`).
 - **Chưa chạy trên GitHub Actions lần nào** (`total_count = 0` trong Actions API) và telemetry vẫn là SQLite fallback vì chưa có `SUPABASE_DB_URL`/`SIM_MCP_DB_URL`/`SIM_TENANT_SECRET` trong GitHub Secrets.
-- Còn thiếu: seed đủ 100 user, telemetry thật lên Supabase Cloud, và phần tải k6 stress/soak (Bài tập 9.1–9.4 trong sprint).
+- Còn thiếu: telemetry thật lên Supabase Cloud/GitHub Actions, phần tải k6 stress/soak (Bài tập 9.1–9.4), golden dataset + chấm RAGAS.
 
 ## Cấu hình biến môi trường / GitHub Secrets
 
@@ -47,3 +48,8 @@ Double-click `run_phase3_ux_sim.cmd` ở thư mục gốc repo. Menu gồm:
 File tự dùng `.venv\Scripts\python.exe`, hiện cảnh báo và yêu cầu xác nhận khi
 target không phải local, và lưu lịch sử report `reports/ux_report_<timestamp>.md/json`
 (đã gitignore).
+
+## Đánh giá kết quả
+
+Xem [how_eval.md](../how_eval.md): ngưỡng pass/fail, cách đọc TTFT/chat E2E/refusal/
+nén context/RPD theo số mẫu, và hành động cải thiện cho Phase 3, load test và RAGAS.

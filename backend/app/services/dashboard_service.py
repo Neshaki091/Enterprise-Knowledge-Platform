@@ -330,6 +330,8 @@ class DashboardService:
                 snapshot = (await cls.get_platform_analytics(db)).model_dump()
             else:
                 snapshot = (await cls.get_tenant_analytics(db, tenant_id)).model_dump()
+            # Trả kết nối DB về pool ngay sau mỗi tick, tránh giữ connection suốt vòng lặp SSE.
+            await db.close()
 
             yield f"event: analytics\ndata: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
             emitted += 1
