@@ -26,6 +26,8 @@ from app.schemas.chat import (
     ChatFeedbackCreate,
     ChatFeedbackResponse,
     ChatHistoryResponse,
+    ChatRollbackRequest,
+    ChatRollbackResponse,
 )
 from app.services.chat_service import ChatService
 from app.services.streaming_service import StreamingChatService
@@ -199,6 +201,45 @@ async def get_chat_history(
         limit=limit,
     )
     return ChatHistoryResponse(total=len(turns), turns=turns)
+
+
+@router.post(
+    "/rollback",
+    response_model=ChatRollbackResponse,
+    summary="Hoàn tác lượt hỏi-đáp gần nhất trong phiên chat hiện tại",
+)
+async def rollback_last_turn(
+    request: ChatRollbackRequest,
+    context: TenantContext = Depends(get_current_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Xoá lượt gần nhất của chính người dùng trong phiên.
+
+    Lượt bị xoá cũng biến mất khỏi session memory và dataset RAGAS.
+    Chỉ thao tác trên dữ liệu của user hiện tại; RLS vẫn là lớp bảo vệ thứ hai.
+    """
+    turn_id = await ChatHistoryService.delete_latest_turn(
+        db,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        session_id=request.session_id,
+    )
+    await TelemetryService.record_event(
+        db,
+        event_type="chat_rollback",
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        status_code=200,
+        details={
+            "session_id": str(request.session_id),
+            "turn_id": str(turn_id) if turn_id else None,
+            "deleted": turn_id is not None,
+        },
+        persist=True,
+    )
+    await db.commit()
+    return ChatRollbackResponse(deleted=turn_id is not None, turn_id=turn_id)
 
 
 @router.post(

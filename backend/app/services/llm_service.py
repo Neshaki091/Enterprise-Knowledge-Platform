@@ -122,9 +122,10 @@ class LLMService:
         context: str,
         mode: str = "hybrid",
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        history: Optional[str] = None,
     ) -> Tuple[str, int]:
         """Sinh câu trả lời đầy đủ (Non-streaming) theo chế độ yêu cầu."""
-        prompt = PromptService.build_rag_prompt(query, context)
+        prompt = PromptService.build_rag_prompt(query, context, history or "")
         estimated_input_tokens = len(prompt) // 4
 
         if mode == "retrieval_only":
@@ -138,13 +139,13 @@ class LLMService:
 
         elif mode == "hybrid":
             if not cls._is_real_configured():
-                return await cls.generate_answer(query, context, mode="mock", transport=transport)
+                return await cls.generate_answer(query, context, mode="mock", transport=transport, history=history)
             try:
-                return await cls.generate_answer(query, context, mode="real", transport=transport)
+                return await cls.generate_answer(query, context, mode="real", transport=transport, history=history)
             except HTTPException as exc:
                 if exc.status_code in (502, 503, 504):
                     logger.warning("Cloud LLM tạm thời quá tải (%s), chuyển sang fallback an toàn từ ngữ cảnh đã lọc.", exc.detail)
-                    return await cls.generate_answer(query, context, mode="mock", transport=transport)
+                    return await cls.generate_answer(query, context, mode="mock", transport=transport, history=history)
                 raise
 
         elif mode == "real":
@@ -207,9 +208,10 @@ class LLMService:
         context: str,
         mode: str = "hybrid",
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        history: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Async generator truyền từng token từ Cloud LLM API (kèm retry 503/429) hoặc Mock grounded stream."""
-        prompt = PromptService.build_rag_prompt(query, context)
+        prompt = PromptService.build_rag_prompt(query, context, history or "")
 
         if mode == "retrieval_only":
             return
@@ -299,6 +301,7 @@ class LLMService:
                 context=context,
                 mode=fallback_mode,
                 transport=transport,
+                history=history,
             )
             for word in full_answer.split(" "):
                 if word:

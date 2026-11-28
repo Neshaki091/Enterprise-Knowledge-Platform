@@ -16,6 +16,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Timer,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/features/auth/auth-context";
@@ -24,6 +25,7 @@ import { ApiError, describeApiError, streamChat } from "@/lib/api-client";
 import { formatNumber } from "@/lib/utils";
 import type {
   ChatCitation,
+  ChatHistoryTurn,
   ChatMode,
   ChatStreamDone,
   CompressionStats,
@@ -98,6 +100,100 @@ function createEntryId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+const SESSION_STORAGE_PREFIX = "ekp.chat.session.";
+
+/** UUID hợp lệ cho session_id backend; fallback cho trình duyệt cũ. */
+function createSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = (Math.random() * 16) | 0;
+    const value = char === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function sessionStorageKey(tenantId: string, userId: string): string {
+  return `${SESSION_STORAGE_PREFIX}${tenantId}.${userId}`;
+}
+
+function historyMode(raw: string | null): ChatMode {
+  return raw === "real" || raw === "retrieval_only" ? raw : "hybrid";
+}
+
+/** Chuyển các lượt đã lưu thành cặp user/assistant để render lại sau khi reload. */
+function historyToEntries(turns: ChatHistoryTurn[]): ConversationEntry[] {
+  const result: ConversationEntry[] = [];
+  for (const turn of [...turns].reverse()) {
+    result.push({
+      id: `${turn.id}-user`,
+      role: "user",
+      content: turn.query,
+      status: "done",
+    });
+
+    const chunks = (turn.contexts ?? [])
+      .map((raw) => {
+        const context = raw as Record<string, unknown>;
+        const text =
+          typeof context.text === "string"
+            ? context.text
+            : typeof context.parent_content === "string"
+              ? context.parent_content
+              : typeof context.child_content === "string"
+                ? context.child_content
+                : "";
+        return {
+          child_chunk_id: typeof context.child_chunk_id === "string" ? context.child_chunk_id : "",
+          parent_chunk_id: typeof context.parent_chunk_id === "string" ? context.parent_chunk_id : "",
+          document_id: typeof context.document_id === "string" ? context.document_id : "",
+          document_title: typeof context.document_title === "string" ? context.document_title : "",
+          heading: typeof context.heading === "string" ? context.heading : null,
+          child_content: text,
+          parent_content: text,
+          rrf_score: typeof context.rrf_score === "number" ? context.rrf_score : 0,
+          dense_score: typeof context.dense_score === "number" ? context.dense_score : null,
+          sparse_score: typeof context.sparse_score === "number" ? context.sparse_score : null,
+        } satisfies SearchResultItem;
+      })
+      .filter((chunk) => chunk.child_chunk_id && chunk.document_id);
+
+    const mode = historyMode(turn.mode);
+    result.push({
+      id: turn.id,
+      role: "assistant",
+      content: turn.answer,
+      query: turn.query,
+      mode,
+      chunks: chunks.length > 0 ? chunks : undefined,
+      citations: turn.citations ?? [],
+      compression: {
+        original_tokens: turn.input_tokens,
+        compressed_tokens: turn.compressed_tokens,
+        savings_percent: turn.compression_savings_percent,
+        retained_chunks: chunks.length,
+      },
+      done: {
+        type: "done",
+        mode,
+        tokens_saved_percent: turn.compression_savings_percent,
+        retained_chunks: chunks.length,
+        output_tokens: turn.output_tokens,
+        session_id: turn.session_id,
+      },
+      status: "done",
+      feedback: turn.feedback_rating ?? undefined,
+      firstTokenMs: turn.ttfb_ms,
+    });
+  }
+  return result;
+}
+
 /** Hiển thị thống kê nén ngữ cảnh 3 tầng do backend trả về trong sự kiện chunks/done. */
 function CompressionSummary({
   stats,
@@ -163,6 +259,9 @@ export function ChatPage() {
   const [target, setTarget] = useState<CitationTarget | null>(null);
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const [clock, setClock] = useState(Date.now());
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [rollingBack, setRollingBack] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -183,6 +282,9 @@ export function ChatPage() {
     : departments.filter((department) => department.id === me?.department_id);
 
   const isStreaming = entries.some((entry) => entry.status === "streaming");
+  const lastEntry = entries.length > 0 ? entries[entries.length - 1] : undefined;
+  const canRollback =
+    !isStreaming && lastEntry?.role === "assistant" && lastEntry.status === "done";
 
   useEffect(() => {
     const handle = window.setInterval(() => setClock(Date.now()), 500);
@@ -195,14 +297,53 @@ export function ChatPage() {
     if (cooldownUntil && cooldownSeconds === 0) setCooldownUntil(null);
   }, [cooldownUntil, cooldownSeconds]);
 
-  // Đổi tenant phải dừng luồng đang chạy và xóa hội thoại cũ để tránh rò rỉ ngữ cảnh chéo Tenant.
+  // Đổi tenant/user phải dừng luồng đang chạy và xóa hội thoại cũ để tránh rò rỉ ngữ cảnh chéo Tenant.
   useEffect(() => {
     abortRef.current?.abort();
     setEntries([]);
     setTarget(null);
     setInput("");
     setCooldownUntil(null);
-  }, [tenantId]);
+    setSessionId(null);
+    setHistoryLoading(false);
+  }, [tenantId, me?.user_id]);
+
+  // Mỗi cặp tenant/user có session riêng trong localStorage để reload vẫn nối đúng hội thoại.
+  useEffect(() => {
+    if (!tenantId || !me?.user_id) return;
+    const key = sessionStorageKey(tenantId, me.user_id);
+    let stored: string | null = window.localStorage.getItem(key);
+    if (!stored || !isUuidLike(stored)) {
+      stored = createSessionId();
+      window.localStorage.setItem(key, stored);
+    }
+    setSessionId(stored);
+  }, [tenantId, me?.user_id]);
+
+  // Nạp lại các lượt đã lưu của phiên hiện tại (chỉ khi người dùng chưa gửi lượt mới).
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    chatApi
+      .history(sessionId, 50)
+      .then((response) => {
+        if (cancelled) return;
+        const loaded = historyToEntries(response.turns);
+        setEntries((current) => (current.length === 0 ? loaded : current));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error(describeApiError(error, "Không tải được lịch sử hội thoại."));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -239,10 +380,26 @@ export function ChatPage() {
     },
   });
 
+  const persistSession = (id: string): void => {
+    if (!tenantId || !me?.user_id) return;
+    try {
+      window.localStorage.setItem(sessionStorageKey(tenantId, me.user_id), id);
+    } catch {
+      // localStorage bị chặn: vẫn dùng session trong bộ nhớ của tab hiện tại.
+    }
+  };
+
   const sendQuery = async (rawQuery: string): Promise<void> => {
     const trimmed = rawQuery.trim();
     if (trimmed.length < 2 || trimmed.length > 2000) return;
     if (abortRef.current || cooldownSeconds > 0) return;
+
+    let activeSessionId = sessionId;
+    if (!activeSessionId) {
+      activeSessionId = createSessionId();
+      setSessionId(activeSessionId);
+      persistSession(activeSessionId);
+    }
 
     const assistantId = createEntryId();
     const userEntry: ConversationEntry = {
@@ -275,6 +432,7 @@ export function ChatPage() {
           max_context_tokens: Number(contextTokens),
           department_id: departmentId || null,
           mode,
+          session_id: activeSessionId,
         },
         {
           onChunks: (chunks, stats) => {
@@ -293,6 +451,10 @@ export function ChatPage() {
             }));
           },
           onDone: (done) => {
+            if (done.session_id && done.session_id !== activeSessionId) {
+              setSessionId(done.session_id);
+              persistSession(done.session_id);
+            }
             updateEntry(assistantId, (entry) => ({ ...entry, done, status: "done" }));
           },
           onError: (message) => {
@@ -330,9 +492,42 @@ export function ChatPage() {
 
   const resetConversation = (): void => {
     abortRef.current?.abort();
+    const nextSession = createSessionId();
+    persistSession(nextSession);
+    setSessionId(nextSession);
     setEntries([]);
     setTarget(null);
     setCooldownUntil(null);
+    setHistoryLoading(false);
+  };
+
+  const rollbackLastTurn = async (): Promise<void> => {
+    if (!sessionId || !canRollback || rollingBack) return;
+    setRollingBack(true);
+    try {
+      const result = await chatApi.rollback(sessionId);
+      if (!result.deleted) {
+        toast.info("Phiên này không còn lượt nào để hoàn tác.");
+        return;
+      }
+      setEntries((current) => {
+        const next = [...current];
+        for (let index = next.length - 1; index >= 0; index -= 1) {
+          if (next[index].role !== "assistant") continue;
+          next.splice(index, 1);
+          if (index > 0 && next[index - 1].role === "user") {
+            next.splice(index - 1, 1);
+          }
+          break;
+        }
+        return next;
+      });
+      toast.success("Đã hoàn tác lượt hỏi-đáp cuối.");
+    } catch (error) {
+      toast.error(describeApiError(error, "Không thể hoàn tác lượt chat."));
+    } finally {
+      setRollingBack(false);
+    }
   };
 
   const sendDisabled =
@@ -356,11 +551,21 @@ export function ChatPage() {
     <div className="space-y-6">
       <PageHeader
         title="Trợ lý tri thức"
-        description="Hỏi đáp RAG theo thời gian thực: truy xuất FAISS + FTS, lọc ngữ cảnh 3 tầng rồi mới sinh câu trả lời. Chunks và citations xuất hiện trước khi token đầu tiên chảy về."
+        description="Hỏi đáp RAG theo thời gian thực: truy xuất FAISS + FTS, lọc ngữ cảnh 3 tầng rồi mới sinh câu trả lời. Session memory dùng các lượt gần nhất; Hoàn tác xoá lượt cuối khỏi lịch sử."
         actions={
-          <Button variant="outline" onClick={resetConversation} disabled={entries.length === 0}>
-            <RefreshCw /> Cuộc trò chuyện mới
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              onClick={() => void rollbackLastTurn()}
+              disabled={!canRollback || rollingBack}
+              title="Xoá lượt hỏi-đáp gần nhất khỏi phiên và session memory"
+            >
+              <Undo2 /> {rollingBack ? "Đang hoàn tác..." : "Hoàn tác lượt cuối"}
+            </Button>
+            <Button variant="outline" onClick={resetConversation} disabled={entries.length === 0}>
+              <RefreshCw /> Cuộc trò chuyện mới
+            </Button>
+          </>
         }
       />
 
@@ -460,7 +665,11 @@ export function ChatPage() {
           className="h-[54vh] min-h-[400px] space-y-5 overflow-y-auto px-4 py-5 lg:px-5"
           aria-live="polite"
         >
-          {entries.length === 0 ? (
+          {historyLoading && entries.length === 0 ? (
+            <div className="flex h-full min-h-[240px] items-center justify-center gap-2 text-xs text-muted-foreground">
+              <Spinner /> Đang tải lịch sử hội thoại…
+            </div>
+          ) : entries.length === 0 ? (
             <EmptyState
               icon={MessageSquareText}
               title="Bắt đầu cuộc trò chuyện với kho tri thức"

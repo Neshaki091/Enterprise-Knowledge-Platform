@@ -85,6 +85,17 @@ class ChatHistoryResponse(BaseModel):
     turns: List[ChatHistoryTurn]
 
 
+class ChatRollbackRequest(BaseModel):
+    """Yêu cầu hoàn tác lượt hỏi-đáp gần nhất trong một phiên."""
+    session_id: uuid.UUID = Field(..., description="Phiên hội thoại cần hoàn tác lượt cuối")
+
+
+class ChatRollbackResponse(BaseModel):
+    """Kết quả hoàn tác; deleted=false nếu phiên không còn lượt nào."""
+    deleted: bool
+    turn_id: Optional[uuid.UUID] = None
+
+
 class ChatFeedbackCreate(BaseModel):
     """Schema gửi đánh giá câu trả lời (Thumbs Up/Down)."""
     query: str = Field(..., description="Câu hỏi ban đầu")

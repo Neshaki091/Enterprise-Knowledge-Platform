@@ -7,4 +7,4 @@ build kiểm tra hằng số này khớp tag image trước khi build/push. Khô
 version backend riêng ở chỗ khác.
 """
 
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.5.0"

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Tắt bằng CHAT_HISTORY_ENABLED=false nếu không muốn lưu nội dung hội thoại.
     CHAT_HISTORY_ENABLED: bool = True
     CHAT_HISTORY_RETENTION_DAYS: int = Field(default=365, ge=1, le=365)
+    # Số lượt gần nhất được đưa vào prompt làm session memory (không phải nguồn chứng cứ).
+    CHAT_HISTORY_CONTEXT_TURNS: int = Field(default=3, ge=1, le=10)
+    CHAT_HISTORY_CONTEXT_TOKENS: int = Field(default=500, ge=100, le=1500)
 
     # Database
     POSTGRES_SERVER: str = "localhost"

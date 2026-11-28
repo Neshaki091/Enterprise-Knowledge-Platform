@@ -151,6 +151,7 @@ export interface CompressionStats {
 export interface ChatQueryResponse {
   answer: string;
   query: string;
+  session_id: string;
   retrieved_chunks: SearchResultItem[];
   citations: ChatCitation[];
   tokens_used: number;
@@ -181,6 +182,8 @@ export interface ChatQueryRequest {
   max_context_tokens?: number;
   department_id?: string | null;
   mode?: ChatMode;
+  /** ID phiên do client giữ để nạp lại lịch sử và session memory. */
+  session_id?: string;
 }
 
 export interface ChatStreamDone {
@@ -189,6 +192,37 @@ export interface ChatStreamDone {
   tokens_saved_percent: number;
   retained_chunks: number;
   output_tokens: number;
+  session_id?: string;
+}
+
+export interface ChatHistoryTurn {
+  id: string;
+  session_id: string;
+  query: string;
+  answer: string;
+  contexts: Record<string, unknown>[];
+  citations: ChatCitation[];
+  chunk_ids: string[];
+  model_name: string | null;
+  mode: string | null;
+  latency_ms: number;
+  ttfb_ms: number | null;
+  input_tokens: number;
+  compressed_tokens: number;
+  output_tokens: number;
+  compression_savings_percent: number;
+  feedback_rating: "THUMBS_UP" | "THUMBS_DOWN" | null;
+  created_at: string;
+}
+
+export interface ChatHistoryResponse {
+  total: number;
+  turns: ChatHistoryTurn[];
+}
+
+export interface ChatRollbackResponse {
+  deleted: boolean;
+  turn_id: string | null;
 }
 
 export interface PlatformAdminDashboard {

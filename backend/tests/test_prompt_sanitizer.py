@@ -80,3 +80,16 @@ def test_sanitize_answer_collapses_inline_duplicate_answer():
 def test_sanitize_answer_collapses_duplicate_sentences_with_space():
     cleaned = PromptService.sanitize_answer(f"{SCREENSHOT_ANSWER} {SCREENSHOT_ANSWER}")
     assert cleaned == SCREENSHOT_ANSWER
+
+
+def test_build_rag_prompt_includes_session_memory():
+    prompt = PromptService.build_rag_prompt(
+        "Còn điều kiện nào nữa?",
+        "Ngữ cảnh tài liệu",
+        "Người dùng: Chính sách nghỉ phép?\nTrợ lý: 14 ngày phép.",
+    )
+
+    assert "<conversation>" in prompt
+    assert "Chính sách nghỉ phép?" in prompt
+    assert "<context>" in prompt
+    assert "Còn điều kiện nào nữa?" in prompt

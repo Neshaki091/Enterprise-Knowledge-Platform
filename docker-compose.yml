@@ -64,6 +64,8 @@ services:
       DB_RLS_ENABLED: "true"
       CHAT_HISTORY_ENABLED: ${CHAT_HISTORY_ENABLED:-true}
       CHAT_HISTORY_RETENTION_DAYS: ${CHAT_HISTORY_RETENTION_DAYS:-365}
+      CHAT_HISTORY_CONTEXT_TURNS: ${CHAT_HISTORY_CONTEXT_TURNS:-3}
+      CHAT_HISTORY_CONTEXT_TOKENS: ${CHAT_HISTORY_CONTEXT_TOKENS:-500}
       FAISS_INDEX_STORAGE_PATH: /app/backend/storage/indexes
       # AI Inference (truyền từ .env của môi trường triển khai; không bake vào image).
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}

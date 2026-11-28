@@ -19,7 +19,8 @@ class PromptService:
         "QUY TẮC BẮT BUỘC (FAIL-CLOSED):\n"
         "0. CHỈ xuất câu trả lời cuối cùng. KHÔNG lặp lại câu hỏi, KHÔNG liệt kê context/constraints, "
         "KHÔNG mô tả quá trình suy luận hay tự đánh giá định dạng. KHÔNG lặp lại cùng một câu hoặc cùng một ý.\n"
-        "1. CHỈ dùng thông tin trong thẻ <context>. Cấm dùng kiến thức ngoài hay suy diễn.\n"
+        "1. CHỈ dùng thông tin trong thẻ <context>. Cấm dùng kiến thức ngoài hay suy diễn. "
+        "Lịch sử hội thoại (nếu có) chỉ để hiểu câu hỏi nối tiếp, KHÔNG phải nguồn chứng cứ.\n"
         "2. Mọi luận điểm/con số phải trích dẫn: [Nguồn: <Tên tài liệu>, Phân mục: <Tên phân mục>].\n"
         "3. Nếu <context> không đủ thông tin, BẮT BUỘC trả lời đúng câu sau: "
         "'Xin lỗi, tôi không tìm thấy thông tin này trong tài liệu nội bộ của doanh nghiệp.'"
@@ -42,18 +43,20 @@ class PromptService:
     )
 
     @classmethod
-    def build_rag_prompt(cls, query: str, context: str) -> str:
-        """Ghép nối query và context đã nén vào cấu trúc chuẩn tiết kiệm token."""
+    def build_rag_prompt(cls, query: str, context: str, history: str = "") -> str:
+        """Ghép lịch sử hội thoại ngắn, context đã nén và câu hỏi vào prompt tiết kiệm token."""
+        history = (history or "").strip()
+        history_block = f"<conversation>\n{history}\n</conversation>\n\n" if history else ""
         return (
-            f"<context>\n{context}\n</context>\n\n"
+            f"{history_block}<context>\n{context}\n</context>\n\n"
             f"Câu hỏi: {query}\n"
             f"Trả lời trực tiếp (không lặp lại hướng dẫn), ngắn gọn, kèm trích dẫn:"
         )
 
     @classmethod
-    def estimate_total_input_tokens(cls, query: str, context: str) -> int:
-        """Ước lượng tổng số token đầu vào (System Prompt + Context + Query wrapper)."""
-        rag_prompt = cls.build_rag_prompt(query, context)
+    def estimate_total_input_tokens(cls, query: str, context: str, history: str = "") -> int:
+        """Ước lượng tổng số token đầu vào (System Prompt + History + Context + Query wrapper)."""
+        rag_prompt = cls.build_rag_prompt(query, context, history)
         return estimate_tokens(cls.SYSTEM_PROMPT) + estimate_tokens(rag_prompt)
 
     @classmethod

@@ -29,6 +29,7 @@ from app.services.context_filter import ContextFilterPipeline
 from app.services.llm_service import LLMService
 from app.services.telemetry_service import TelemetryService
 from app.services.chat_history_service import ChatHistoryService
+from app.services.chunking_service import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,10 @@ class StreamingChatService:
         limits = resolve_tenant_limits(tenant.quota_limits if tenant else None)
         reserved_tokens = min(
             limits["tpm_limit"],
-            request.max_context_tokens + 160 + max(30, len(request.query) // 3),
+            request.max_context_tokens
+            + 160
+            + max(30, len(request.query) // 3)
+            + settings.CHAT_HISTORY_CONTEXT_TOKENS,
         )
         is_allowed, retry_after = await quota_manager.acquire(
             str(context.tenant_id),
@@ -111,11 +115,28 @@ class StreamingChatService:
         rpm_limit = limits["rpm_limit"]
         tpm_limit = limits["tpm_limit"]
 
+        # 1b. Nạp session memory ngắn trước khi đóng DB; chỉ để hiểu câu hỏi nối tiếp.
+        history_turns = await ChatHistoryService.list_recent_turns(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
+        )
+        history_text = ChatHistoryService.format_for_prompt(
+            history_turns,
+            settings.CHAT_HISTORY_CONTEXT_TOKENS,
+        )
+        history_tokens = estimate_tokens(history_text) if history_text else 0
+
         if reserved_tokens is None:
             # Fallback khi generator được gọi trực tiếp (không qua endpoint pre-check)
             reserved_tokens = min(
                 tpm_limit,
-                request.max_context_tokens + 160 + max(30, len(request.query) // 3),
+                request.max_context_tokens
+                + 160
+                + max(30, len(request.query) // 3)
+                + history_tokens,
             )
             is_allowed, retry_after = await quota_manager.acquire(
                 tenant_str,
@@ -161,7 +182,9 @@ class StreamingChatService:
             max_chunks=min(request.top_k, 3),
             max_context_tokens=request.max_context_tokens,
         )
-        prompt_input_tokens = int(stats.get("prompt_input_tokens", reserved_tokens))
+        prompt_input_tokens = int(stats.get("prompt_input_tokens", 0) or 0) + history_tokens
+        stats["history_tokens"] = history_tokens
+        stats["history_turns"] = len(history_turns)
         await quota_manager.reconcile_tokens(
             tenant_str,
             reserved_tokens=reserved_tokens,
@@ -226,6 +249,7 @@ class StreamingChatService:
                 query=request.query,
                 context=filtered_context,
                 mode=request.mode,
+                history=history_text,
             ):
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
@@ -294,6 +318,7 @@ class StreamingChatService:
                     details={
                         "savings_percent": stats.get("savings_percent", 0.0),
                         "retained_chunks": stats.get("retained_chunks", 0),
+                        "history_turns": len(history_turns),
                     },
                     persist=True,
                 )

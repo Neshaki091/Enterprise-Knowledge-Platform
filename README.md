@@ -131,7 +131,7 @@ npm run build      # typecheck + build production
 ## Kiểm thử
 
 ```bash
-# Backend: 63 test, SQLite in-memory, không gọi AI API
+# Backend: 66 test, SQLite in-memory, không gọi AI API
 python -m pytest backend/tests -v
 
 # Frontend E2E (cần stack đang chạy)
@@ -152,7 +152,13 @@ python endpoint_test/run_all_endpoint_tests.py
 
 - Mỗi lượt chat được lưu vào bảng `chat_turns` (RLS theo tenant): query, answer,
   snapshot context, chunk IDs, citations, model, latency, token.
-- Xem lại lượt của chính mình: `GET /api/v1/chat/history`.
+- Frontend giữ `session_id` trong localStorage theo tenant/user: reload trang tự nạp lại
+  các lượt cũ qua `GET /api/v1/chat/history?session_id=...`.
+- **Session memory:** tối đa 3 lượt gần nhất (`CHAT_HISTORY_CONTEXT_TURNS`) và 500 token
+  (`CHAT_HISTORY_CONTEXT_TOKENS`) được đưa vào prompt để hiểu câu hỏi nối tiếp; lịch sử
+  không phải nguồn chứng cứ.
+- **Hoàn tác lượt cuối:** `POST /api/v1/chat/rollback` xoá lượt gần nhất của phiên
+  (chỉ của chính user), đồng thời loại khỏi session memory và dataset RAGAS.
 - Xuất dataset theo tháng để chấm RAGAS **bên ngoài** hệ thống: nút **Xuất JSONL.GZ**
   trong Quản trị doanh nghiệp (OWNER/ADMIN), hoặc CLI
   `scripts/export_ragas_dataset.py`; hướng dẫn tại

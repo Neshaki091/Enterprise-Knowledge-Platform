@@ -102,5 +102,6 @@ Có thể đặt cron chạy hằng tháng sau khi đã export tháng cũ; ví d
 - File export chứa query/answer thật: không commit, không đưa lên GitHub. `.gitignore` đã chặn `ragas_export/`, `ragas_*.jsonl` và `ragas_*.jsonl.gz`.
 - Script chạy với quyền DB tin cậy; mặc định set `app.rls_bypass='on'` để export toàn bộ tenant. Dùng `--tenant-id` nếu chỉ muốn một tenant qua RLS context.
 - Retention mặc định và tối đa 365 ngày (`CHAT_HISTORY_RETENTION_DAYS`); export tháng cũ trước khi prune.
+- Hoàn tác lượt chat (`POST /api/v1/chat/rollback`) xoá hẳn lượt đó khỏi `chat_turns`, nên lượt đã hoàn tác cũng không còn trong dataset RAGAS.
 - Nén gzip thường giảm file còn khoảng 15–30% dung lượng JSONL, tiết kiệm egress khi tải về.
 - Không chạy script này như một phần của request/API; đây là công cụ vận hành thủ công theo tháng.

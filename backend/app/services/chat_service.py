@@ -26,6 +26,7 @@ from app.services.context_filter import ContextFilterPipeline
 from app.services.llm_service import LLMService
 from app.services.telemetry_service import TelemetryService
 from app.services.chat_history_service import ChatHistoryService
+from app.services.chunking_service import estimate_tokens
 
 
 class ChatService:
@@ -44,6 +45,21 @@ class ChatService:
 
         # 0. Xác thực phạm vi phòng ban (Department ACL)
         allowed_departments = ensure_department_allowed(context, request.department_id)
+        session_id = request.session_id or uuid.uuid4()
+
+        # 0b. Nạp session memory ngắn (chỉ để hiểu câu hỏi nối tiếp, không phải chứng cứ).
+        history_turns = await ChatHistoryService.list_recent_turns(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            limit=settings.CHAT_HISTORY_CONTEXT_TURNS,
+        )
+        history_text = ChatHistoryService.format_for_prompt(
+            history_turns,
+            settings.CHAT_HISTORY_CONTEXT_TOKENS,
+        )
+        history_tokens = estimate_tokens(history_text) if history_text else 0
 
         # 1. KIỂM SOÁT HẠN MỨC (áp dụng quota_limits.rpm_limit / tpm_limit của từng Tenant)
         tenant = await db.get(Tenant, context.tenant_id)
@@ -51,8 +67,11 @@ class ChatService:
         rpm_limit = limits["rpm_limit"]
         tpm_limit = limits["tpm_limit"]
 
-        # Đặt cọc token dự kiến dựa trên trần nén tối đa (sẽ hoàn lại phần dư sau khi lọc ngữ cảnh)
-        reserved_tokens = min(tpm_limit, request.max_context_tokens + 160 + max(30, len(request.query) // 3))
+        # Đặt cọc token dự kiến dựa trên trần nén tối đa + session memory (sẽ hoàn lại phần dư).
+        reserved_tokens = min(
+            tpm_limit,
+            request.max_context_tokens + 160 + max(30, len(request.query) // 3) + history_tokens,
+        )
         is_allowed, retry_after = await quota_manager.acquire(
             tenant_str,
             estimated_tokens=reserved_tokens,
@@ -100,7 +119,10 @@ class ChatService:
             max_context_tokens=request.max_context_tokens,
         )
         # Hoàn trả phần token tiết kiệm được về lại TPM bucket (hoặc trừ thêm nếu vượt dự kiến)
-        prompt_input_tokens = int(comp_stats.get("prompt_input_tokens", reserved_tokens))
+        base_prompt_tokens = int(comp_stats.get("prompt_input_tokens", 0) or 0)
+        prompt_input_tokens = base_prompt_tokens + history_tokens
+        comp_stats["history_tokens"] = history_tokens
+        comp_stats["history_turns"] = len(history_turns)
         await quota_manager.reconcile_tokens(
             tenant_str,
             reserved_tokens=reserved_tokens,
@@ -128,7 +150,8 @@ class ChatService:
             answer, tokens_used = await LLMService.generate_answer(
                 query=request.query,
                 context=filtered_context,
-                mode=request.mode
+                mode=request.mode,
+                history=history_text,
             )
         except HTTPException as exc:
             await TelemetryService.record_event(
@@ -172,11 +195,11 @@ class ChatService:
                 "savings_percent": comp_stats.get("savings_percent", 0.0),
                 "retained_chunks": comp_stats.get("retained_chunks", 0),
                 "retrieved_count": len(retrieved_chunks),
+                "history_turns": len(history_turns),
             },
             persist=True,
         )
 
-        session_id = request.session_id or uuid.uuid4()
         await ChatHistoryService.record_turn(
             db,
             tenant_id=context.tenant_id,

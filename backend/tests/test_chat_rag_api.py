@@ -10,6 +10,7 @@ Kiểm định:
 
 import gzip
 import json
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -363,3 +364,96 @@ async def test_export_ragas_forbidden_for_employee(client: AsyncClient):
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     res = await client.get(f"/api/v1/chat/export?month={month}", headers=employee_headers)
     assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_chat_rollback_deletes_latest_turn(client: AsyncClient):
+    """Hoàn tác xoá đúng lượt cuối của phiên và không đụng lượt của người khác."""
+    token = await register_and_get_token(client, "rollback_user@acme.com", "Rollback Corp", "rollback-corp")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    files = {
+        "file": (
+            "rollback_policy.txt",
+            "Chính sách nghỉ phép: mỗi nhân viên được 14 ngày phép có lương mỗi năm.".encode("utf-8"),
+            "text/plain",
+        )
+    }
+    assert (await client.post("/api/v1/documents/upload", files=files, headers=headers)).status_code == 201
+
+    session_id = str(uuid.uuid4())
+    first = await client.post(
+        "/api/v1/chat/query",
+        json={"query": "Nhân viên được bao nhiêu ngày phép?", "mode": "mock", "session_id": session_id},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert first.json()["session_id"] == session_id
+
+    history = await client.get(f"/api/v1/chat/history?session_id={session_id}", headers=headers)
+    assert history.status_code == 200
+    assert history.json()["total"] == 1
+
+    rollback = await client.post(
+        "/api/v1/chat/rollback",
+        json={"session_id": session_id},
+        headers=headers,
+    )
+    assert rollback.status_code == 200
+    assert rollback.json()["deleted"] is True
+    assert rollback.json()["turn_id"]
+
+    history_after = await client.get(f"/api/v1/chat/history?session_id={session_id}", headers=headers)
+    assert history_after.status_code == 200
+    assert history_after.json()["total"] == 0
+
+    second_rollback = await client.post(
+        "/api/v1/chat/rollback",
+        json={"session_id": session_id},
+        headers=headers,
+    )
+    assert second_rollback.status_code == 200
+    assert second_rollback.json()["deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_chat_follow_up_receives_session_memory(client: AsyncClient, monkeypatch):
+    """Câu hỏi nối tiếp phải nhận Q/A trước đó của cùng session làm memory."""
+    from app.services.llm_service import LLMService
+
+    token = await register_and_get_token(client, "memory_user@acme.com", "Memory Corp", "memory-corp")
+    headers = {"Authorization": f"Bearer {token}"}
+    files = {
+        "file": (
+            "memory_policy.txt",
+            "Chính sách nghỉ phép: mỗi nhân viên được 14 ngày phép có lương mỗi năm.".encode("utf-8"),
+            "text/plain",
+        )
+    }
+    assert (await client.post("/api/v1/documents/upload", files=files, headers=headers)).status_code == 201
+
+    session_id = str(uuid.uuid4())
+    first = await client.post(
+        "/api/v1/chat/query",
+        json={"query": "Nhân viên được bao nhiêu ngày phép?", "mode": "mock", "session_id": session_id},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert "14 ngày" in first.json()["answer"]
+
+    captured: dict[str, str] = {}
+
+    async def fake_generate_answer(query, context, mode="hybrid", transport=None, history=None):
+        captured["history"] = history or ""
+        return "Câu trả lời nối tiếp dựa trên ngữ cảnh.", 20
+
+    monkeypatch.setattr(LLMService, "generate_answer", fake_generate_answer)
+    second = await client.post(
+        "/api/v1/chat/query",
+        json={"query": "Còn điều kiện nào nữa?", "mode": "mock", "session_id": session_id},
+        headers=headers,
+    )
+
+    assert second.status_code == 200
+    assert "Nhân viên được bao nhiêu ngày phép?" in captured["history"]
+    assert "14 ngày" in captured["history"]

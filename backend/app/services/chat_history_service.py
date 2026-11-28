@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.chat_history import ChatTurn
+from app.services.chunking_service import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,90 @@ class ChatHistoryService:
         stmt = stmt.order_by(ChatTurn.created_at.desc()).limit(max(1, min(limit, 200)))
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def list_recent_turns(
+        db: AsyncSession,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+        limit: int = 3,
+    ) -> List[ChatTurn]:
+        """Lấy tối đa N lượt gần nhất của phiên, trả theo thứ tự thời gian tăng dần."""
+        stmt = (
+            select(ChatTurn)
+            .where(
+                ChatTurn.tenant_id == tenant_id,
+                ChatTurn.user_id == user_id,
+                ChatTurn.session_id == session_id,
+                ChatTurn.answer != "",
+            )
+            .order_by(ChatTurn.created_at.desc(), ChatTurn.id.desc())
+            .limit(max(1, min(limit, 10)))
+        )
+        rows = list((await db.execute(stmt)).scalars().all())
+        rows.reverse()
+        return rows
+
+    @staticmethod
+    def format_for_prompt(turns: List[ChatTurn], max_tokens: int) -> str:
+        """
+        Ghép các lượt cũ thành block hội thoại ngắn cho prompt.
+
+        Lịch sử chỉ giúp hiểu câu hỏi nối tiếp; không phải nguồn chứng cứ.
+        Cắt bớt theo token budget để không làm phình 16K TPM.
+        """
+        if not turns or max_tokens <= 0:
+            return ""
+        blocks: List[str] = []
+        for turn in reversed(turns):
+            query = (turn.query or "").strip()
+            answer = (turn.answer or "").strip()
+            if not query or not answer:
+                continue
+            answer = answer[:1200]
+            block = f"Người dùng: {query}\nTrợ lý: {answer}"
+            candidate = "\n\n".join([block] + blocks)
+            if estimate_tokens(candidate) > max_tokens:
+                if not blocks:
+                    # Một lượt quá dài: cắt bớt để vẫn giữ được ngữ cảnh gần nhất.
+                    block = block[: max(80, max_tokens * 4)]
+                else:
+                    break
+            blocks.insert(0, block)
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    async def delete_latest_turn(
+        db: AsyncSession,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID,
+    ) -> Optional[uuid.UUID]:
+        """Xoá lượt gần nhất của phiên; trả id đã xoá hoặc None."""
+        stmt = (
+            select(ChatTurn.id)
+            .where(
+                ChatTurn.tenant_id == tenant_id,
+                ChatTurn.user_id == user_id,
+                ChatTurn.session_id == session_id,
+            )
+            .order_by(ChatTurn.created_at.desc(), ChatTurn.id.desc())
+            .limit(1)
+        )
+        turn_id = (await db.execute(stmt)).scalar_one_or_none()
+        if turn_id is None:
+            return None
+        result = await db.execute(
+            delete(ChatTurn).where(
+                ChatTurn.id == turn_id,
+                ChatTurn.tenant_id == tenant_id,
+                ChatTurn.user_id == user_id,
+            )
+        )
+        return turn_id if (result.rowcount or 0) > 0 else None
 
     @staticmethod
     async def list_export_batch(

@@ -5,6 +5,33 @@ Nguồn chuẩn của version backend là `backend/app/core/version.py`.
 
 ---
 
+## 2.5.0 — 2026-11-28
+
+**Trạng thái:** đã code + 66 test backend PASS + frontend build PASS;
+**chưa build/push/deploy** (production đang 2.4.0; 2.4.1/2.4.2/2.5.0 cùng chờ deploy).
+
+### Session memory, nạp lại hội thoại và rollback
+
+- Thêm session memory ngắn vào prompt:
+  - lấy tối đa `CHAT_HISTORY_CONTEXT_TURNS` lượt gần nhất (mặc định 3) của đúng
+    tenant/user/session;
+  - giới hạn `CHAT_HISTORY_CONTEXT_TOKENS` (mặc định 500) để không phình 16K TPM;
+  - prompt ghi rõ `<conversation>` chỉ để hiểu câu hỏi nối tiếp, không phải chứng cứ.
+- Frontend giữ `session_id` theo tenant/user trong localStorage:
+  - gửi kèm mọi request chat;
+  - reload trang tự gọi `/chat/history?session_id=...` và dựng lại các cặp user/assistant;
+  - nút **Cuộc trò chuyện mới** tạo session mới, không trộn với hội thoại cũ.
+- Thêm `POST /api/v1/chat/rollback`:
+  - xoá lượt gần nhất của chính user trong session;
+  - ghi telemetry `chat_rollback`;
+  - lượt đã xoá cũng không còn trong session memory và file export RAGAS.
+- Frontend thêm nút **Hoàn tác lượt cuối**; chỉ bật khi lượt cuối là câu trả lời đã hoàn tất.
+- Không cần migration mới; dùng bảng `chat_turns` từ 2.4.0.
+- Đánh đổi: rollback là hard-delete để đúng kỳ vọng “xoá khỏi lịch sử”; nếu cần audit
+  đầy đủ về sau nên chuyển sang soft-delete.
+
+---
+
 ## 2.4.2 — 2026-11-28
 
 **Trạng thái:** đã code + 63 test backend PASS; **chưa build/push/deploy**

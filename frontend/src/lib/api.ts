@@ -5,8 +5,10 @@ import type {
   BusinessAdminDashboard,
   ChatFeedbackCreate,
   ChatFeedbackResponse,
+  ChatHistoryResponse,
   ChatQueryRequest,
   ChatQueryResponse,
+  ChatRollbackResponse,
   DepartmentResponse,
   DocumentDetailResponse,
   DocumentResponse,
@@ -154,6 +156,15 @@ export const searchApi = {
 export const chatApi = {
   query: (payload: ChatQueryRequest): Promise<ChatQueryResponse> =>
     request<ChatQueryResponse>("/api/v1/chat/query", { method: "POST", body: payload }),
+  history: (sessionId?: string, limit = 50): Promise<ChatHistoryResponse> =>
+    request<ChatHistoryResponse>(
+      withQuery("/api/v1/chat/history", { session_id: sessionId, limit }),
+    ),
+  rollback: (sessionId: string): Promise<ChatRollbackResponse> =>
+    request<ChatRollbackResponse>("/api/v1/chat/rollback", {
+      method: "POST",
+      body: { session_id: sessionId },
+    }),
   feedback: (payload: ChatFeedbackCreate): Promise<ChatFeedbackResponse> =>
     request<ChatFeedbackResponse>("/api/v1/chat/feedback", { method: "POST", body: payload }),
   exportRagas: (month: string, includeMock = false): Promise<void> =>
