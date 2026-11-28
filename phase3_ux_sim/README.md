@@ -32,3 +32,17 @@ Công cụ độc lập phục vụ **Phase 3 (Sprint 9)** để:
 ```bash
 .venv\Scripts\python -m phase3_ux_sim.runner --target-url asgi://local --target-users 20 --active-users 5 --steps 4 --offline-llm
 ```
+
+## Chạy nhanh trên Windows (double-click)
+
+Double-click `run_phase3_ux_sim.cmd` ở thư mục gốc repo. Menu gồm:
+
+- Local ASGI smoke: 20 user, 5 active, offline LLM, skip MCP, telemetry SQLite riêng
+  `phase3_ux_sim/sim_local_smoke.db`.
+- Seed-only 100 user, chạy nhanh, tiêu chuẩn hoặc full trên target trong
+  `phase3_ux_sim/.env_vu`.
+- Chạy với URL tùy chỉnh.
+
+File tự dùng `.venv\Scripts\python.exe`, hiện cảnh báo và yêu cầu xác nhận khi
+target không phải local, và lưu lịch sử report `reports/ux_report_<timestamp>.md/json`
+(đã gitignore).

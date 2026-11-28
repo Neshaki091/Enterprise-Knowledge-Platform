@@ -212,7 +212,15 @@ async def run_simulation(args: argparse.Namespace) -> int:
         await storage.dispose()
 
 
+def _enable_utf8_stdout() -> None:
+    """Console Windows cp1258 không in được tiếng Việt; chuyển stdout/stderr sang UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    _enable_utf8_stdout()
     parser = argparse.ArgumentParser(description="Phase 3 UX Simulation & Supabase MCP Verification")
     parser.add_argument("--target-url", default=None, help="URL API Backend thật hoặc asgi://local")
     parser.add_argument("--target-users", type=int, default=None, help="Tổng số user seed (mặc định 100)")
