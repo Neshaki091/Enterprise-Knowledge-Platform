@@ -29,9 +29,9 @@ on:
         description: "Chế độ chat cho k6 soak: mock (không tốn quota Gemini) | hybrid"
         required: false
         default: "mock"
-  # Bỏ comment 2 dòng dưới khi sẵn sàng chạy Soak 5 ngày làm việc liên tiếp (09:30 UTC+7):
-  # schedule:
-  #   - cron: "30 2 * * 1-5"
+  schedule:
+    # 10:00 UTC+7 (03:00 UTC) ngày 15 và 30 hằng tháng chạy stress test định kỳ
+    - cron: "0 3 15,30 * *"
 
 jobs:
   load-test:
@@ -63,21 +63,27 @@ jobs:
           python load_tests/idor_probe.py
           python load_tests/sse_probe.py
 
-      - name: Run k6 Suite (${{ inputs.suite || 'soak' }})
-        if: "${{ inputs.suite != 'probes_only' }}"
+      - name: Run k6 Suite
+        if: "${{ github.event_name == 'schedule' || inputs.suite != 'probes_only' }}"
         run: |
-          SUITE="${{ inputs.suite || 'soak' }}"
-          VUS="${{ inputs.vus || '3' }}"
-          DURATION="${{ inputs.duration || '30m' }}"
-          CHAT_MODE="${{ inputs.chat_mode || 'mock' }}"
-          if [ "$SUITE" = "saturation" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "==> Scheduled Stress Run (ngày 15 & 30): chạy saturation + spike"
             k6 run --summary-export load_tests/reports/k6_saturation.json load_tests/k6/saturation.js
-          elif [ "$SUITE" = "spike" ]; then
             k6 run --summary-export load_tests/reports/k6_spike.json load_tests/k6/spike.js
           else
-            k6 run -e VUS="$VUS" -e DURATION="$DURATION" -e CHAT_MODE="$CHAT_MODE" \
-              --summary-export load_tests/reports/k6_soak.json \
-              load_tests/k6/journey1_employee.js
+            SUITE="${{ inputs.suite || 'soak' }}"
+            VUS="${{ inputs.vus || '3' }}"
+            DURATION="${{ inputs.duration || '30m' }}"
+            CHAT_MODE="${{ inputs.chat_mode || 'mock' }}"
+            if [ "$SUITE" = "saturation" ]; then
+              k6 run --summary-export load_tests/reports/k6_saturation.json load_tests/k6/saturation.js
+            elif [ "$SUITE" = "spike" ]; then
+              k6 run --summary-export load_tests/reports/k6_spike.json load_tests/k6/spike.js
+            else
+              k6 run -e VUS="$VUS" -e DURATION="$DURATION" -e CHAT_MODE="$CHAT_MODE" \
+                --summary-export load_tests/reports/k6_soak.json \
+                load_tests/k6/journey1_employee.js
+            fi
           fi
 
       - name: Upload Load Test Reports Artifact
