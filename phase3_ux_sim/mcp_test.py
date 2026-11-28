@@ -115,9 +115,12 @@ async def run_mcp_supabase_check(
         q_json = q_res.json().get("result", {})
         ok_select = q_res.status_code == 200 and q_json.get("isError") is False
         row_count = 0
+        select_error = None
         if ok_select:
             parsed = json.loads(q_json["content"][0]["text"])
             row_count = int(parsed.get("row_count", 0))
+        else:
+            select_error = (q_json.get("content") or [{}])[0].get("text") or q_res.text[:250]
 
         # 2. Xác minh lớp bảo vệ chặn DDL / bảng ngoài whitelist
         target_tbl = cfg.mcp_allowed_tables[0] if cfg.mcp_allowed_tables else "ux_sim_events"
@@ -156,6 +159,7 @@ async def run_mcp_supabase_check(
                 "separate_mcp_db": cfg.has_separate_mcp_db,
                 "allowed_tables": cfg.mcp_allowed_tables,
                 "select_ok": ok_select,
+                "select_error": select_error,
                 "ddl_blocked": blocked_ddl,
             },
         )
