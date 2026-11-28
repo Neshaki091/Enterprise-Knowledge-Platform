@@ -85,6 +85,7 @@ phase3_ux_sim/*.db
 
 # Dataset RAGAS xuất từ chat_turns (chứa nội dung hội thoại, không commit)
 ragas_export/
+ragas_eval/
 ragas_*.jsonl
 ragas_*.jsonl.gz
 

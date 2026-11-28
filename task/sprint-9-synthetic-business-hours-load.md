@@ -4,7 +4,7 @@
 
 **Ước tính thời gian:** 2 – 3 tuần
 
-**Trạng thái:** 🟢 Đang triển khai — tool & workflow đã xong, lần chạy live đầu tiên 2026-11-26; còn secrets Supabase/Google, seed 100 user, k6 stress + soak (xem mục 0B)
+**Trạng thái:** 🟢 Đang triển khai — tool & workflow đã xong, lần chạy live đầu tiên 2026-11-26; còn secrets Supabase/Google, seed 100 user, k6 stress + soak (xem mục 0B) và các bài giả lập/đánh giá/vận hành bổ sung 9.5–9.16 (mục 0C)
 
 ---
 
@@ -49,7 +49,116 @@
 - [ ] Seed đủ **100 user** (lần đầu mới 5) và lưu telemetry thật lên **Supabase Cloud** thay vì SQLite fallback (`supabase_cloud: false` trong run đầu).
 - [ ] Bài tập 9.1–9.4: k6 journey 1–4, stress tìm điểm bão hòa (429 đầu tiên), soak gộp 5 ngày làm việc.
 - [ ] Đo/báo cáo egress thực tế, RSS/CPU/connection, đối chiếu trần 25 RPM và 16K TPM.
+- [ ] Các bài giả lập/đánh giá/vận hành bổ sung **9.5–9.16** (mục 0C): baseline 2.6.0, dataset vàng, saturation matrix, soak ledger, đối soát egress, RAGAS + cổng hồi quy, hoàn tất simulator, SLO/runbook/diễn tập, change management, gói bằng chứng.
 - [ ] Hoàn tất checklist nghiệm thu mục 2 và phần phản biện.
+
+---
+
+## 0C. TASK BỔ SUNG (2026-11-28): GIẢ LẬP — ĐÁNH GIÁ — HỌC VẬN HÀNH PRODUCTION
+
+Mục 0A/0B mô tả công cụ UX simulator; mục 1 mô tả 4 bài tải 9.1–9.4. Phần dưới bổ sung các bài **9.5–9.16** để biến số đo thành bằng chứng kiểm chứng được và tập các kỹ năng vận hành production. Sprint 10 vẫn sở hữu pentest + vận hành 4 tuần; Sprint 9 chỉ **diễn tập một lần** trên staging/local, không thay thế Sprint 10.
+
+**Nguyên tắc chung**
+
+- Mọi bài chạy staging/local trước; production chỉ sau khi `/health` xanh và có backup.
+- Không gọi Google AI/LLM thật khi chưa xác nhận; dùng `mode=mock`/`hybrid` cho bài lặp lại. RAGAS cần judge LLM ➔ xin phép trước, ghi rõ model + hạn mức.
+- Không commit secret, `.env`, dataset thật, log có PII, báo cáo RAGAS thô; chỉ commit số tổng hợp + quy trình.
+- Mỗi bài phải để lại: lệnh đã chạy, timestamp UTC, số đo trước/sau, file báo cáo trong repo (trừ dữ liệu nhạy cảm).
+- Điều kiện dừng khẩn: OOM, 5xx > 1% kéo dài, đĩa > 80%, RSS backend > 300 MB, DB connection cạn, egress chạm 80%.
+
+### Nhóm A — Baseline phát hành & dữ liệu đo
+
+- [ ] **9.5 — Baseline 2.6.0 & bằng chứng phát hành.**
+  - Deploy qua workflow Build, Push & Deploy; xác nhận `/health` trả `2.6.0`, `alembic current` = `0011_add_chat_attachments`, 3 container healthy, RSS sau warm-up.
+  - Smoke tối thiểu: login ➔ upload tài liệu công ty ➔ chat có citation ➔ chat kèm attachment riêng ➔ user khác/session khác không thấy ➔ SSE không lộ `<session_memory>` ➔ export RAGAS loại lượt attachment.
+  - Lưu image digest + commit + tag rollback (`previous`); chụp `/health`, `docker ps`, `alembic current` vào `deploy/releases/2.6.0.md` (không chứa secret).
+  - Backup `pg_dump` + FAISS index **trước** deploy và ngay sau migration; ghi dung lượng + checksum.
+  - *Deliverable:* release note 2.6.0 + ảnh/log baseline.
+
+- [ ] **9.6 — Dataset vàng & hiệu chuẩn tải.**
+  - 2 tenant FREE × 10 user; 3–5 tài liệu synthetic/tenant; **20 câu hỏi vàng**: 8 trả lời được, 4 phải từ chối, 4 nối tiếp 2 lượt, 4 không kết quả rồi đổi từ khóa.
+  - Mỗi câu ghi `expected_answer`, `expected_source_heading`, `expected_behavior` vào `load_tests/dataset/golden_qa.json` (dữ liệu synthetic, không PII). Đây là `reference` để chấm context recall và là bộ hồi quy hành vi.
+  - Hiệu chuẩn Journey 1: 3–5 VU, 200 req/giờ/VU, think-time 12–25 s, tỷ lệ 80% đọc (search/list/dashboard) / 20% chat, 10–30% phiên bỏ ngang; chat ≤ 300 lượt/ngày.
+  - Chạy mock 1 lượt, xác nhận kết quả lặp lại; ghi `load_tests/reports/calibration_<YYYY-MM-DD>.md`.
+  - *Deliverable:* golden set + báo cáo hiệu chuẩn (không chứa đáp án thật của khách hàng).
+
+### Nhóm B — Đo tải, bão hòa, soak, egress
+
+- [ ] **9.7 — Ma trận bão hòa (saturation matrix).**
+  - 10 ➔ 20 ➔ 40 ➔ 60 VU, 5 phút/mức, bỏ pacing; ghi mỗi mức: RPS, p95 API, SSE đồng thời, 5xx, thời điểm 429 đầu tiên, CPU, RSS, `pg_stat_activity`, FD (`ss -s`), đĩa.
+  - Phân biệt **429 của token bucket ứng dụng** (có `Retry-After`) với **503/limit_req của Nginx** — hai nguyên nhân khác nhau, không gộp số.
+  - Dừng khi 429 kéo dài, 5xx > 1% hoặc RSS > 300 MB; ghi rõ biến nào bão hòa trước (RPM, TPM, RAM, DB pool, SSE).
+  - *Deliverable:* bảng + biểu đồ `load_tests/reports/saturation_<YYYY-MM-DD>.md`.
+
+- [ ] **9.8 — Soak 5 ngày làm việc, sổ nhật ký theo ngày.**
+  - Chạy đúng workload 8h–17h (nghỉ 12h–13h) trong 5 ngày; lấy mẫu 5 phút/lần.
+  - Mỗi ngày ghi: request, 5xx, 429, p95, RSS đầu/cuối/đỉnh, CPU trung bình/đỉnh, connection đỉnh, FD, đĩa, egress ước tính.
+  - So mốc cuối ngày 1 sau warm-up: RSS tăng < 10%, không OOM/FD leak, đĩa tăng tuyến tính; nếu vượt ➔ dừng, thu `docker logs`, `dmesg`, `pg_stat_activity` rồi post-mortem.
+  - *Deliverable:* `load_tests/reports/soak_<YYYY-MM-DD>.md` với bảng 5 ngày + kết luận pass/fail.
+
+- [ ] **9.9 — Đối soát egress với hoá đơn GCP.**
+  - Tính bytes/ngày từ access log Nginx (body + header ước tính), tách asset Vercel, chat SSE, admin realtime, backup và download RAGAS.
+  - Đối chiếu với GCP Billing/Network egress; access log **không tính TCP/TLS overhead** nên hoá đơn là nguồn chuẩn.
+  - Ngoại suy tháng, so mục tiêu 0,6–0,8 GB; đặt cảnh báo 80% (0,8 GB) và ghi hành động khi chạm ngưỡng (giảm chat/realtime, tạm dừng soak).
+  - *Deliverable:* bảng "ước tính vs thực đo" + ảnh dashboard chi phí (che thông tin nhạy cảm).
+
+### Nhóm C — Đánh giá chất lượng RAG (RAGAS)
+
+- [ ] **9.10 — Chạy RAGAS bên ngoài hệ thống.**
+  - Export tháng bằng CLI/API; chỉ giữ `mode` thật (`real`/`hybrid`), loại `mock`/`retrieval_only`, loại `has_attachment=true`; lấy mẫu 50–100 lượt.
+  - Phân tách **single-turn** (lượt đầu mỗi `session_id`) và **follow-up** (các lượt sau, sắp theo `created_at`); đánh giá riêng vì follow-up dựa vào session memory, không chỉ context.
+  - Ghép `reference` từ golden set theo `user_input`; nếu không có reference thì bỏ context recall, chỉ chấm faithfulness/answer relevancy/context precision.
+  - Dùng judge LLM bên ngoài (không thêm `ragas` vào backend image), xin phép trước, giới hạn số mẫu và RPM; lưu key ngoài repo.
+  - Báo cáo: điểm trung bình + phân bố, tỷ lệ trích dẫn đúng, tỷ lệ từ chối đúng, lỗi điển hình (thiếu context, sai nguồn, lặp câu, lộ reasoning).
+  - *Deliverable:* `ragas_eval/report_<YYYY-MM>.md` (gitignored) + bảng tổng hợp không chứa nội dung nhạy cảm.
+
+- [ ] **9.11 — Cổng hồi quy chất lượng trước mỗi lần đổi prompt/model.**
+  - Đóng băng bộ 30 mẫu đại diện (gồm refusal + follow-up); chạy trên 2.6.0 làm baseline.
+  - Sau mỗi thay đổi prompt/model/context, chạy lại cùng bộ; chấp nhận biến động ±0,03, chặn deploy nếu giảm > 0,05 ở faithfulness hoặc context precision.
+  - Ghi model + commit + ngày vào báo cáo để truy vết.
+  - *Deliverable:* baseline + quy trình "đo trước/đo sau" trong `ragas_eval/README.md`.
+
+### Nhóm D — Hoàn tất UX simulator
+
+- [ ] **9.12 — Đưa `phase3_ux_sim` lên GitHub Actions và Supabase Cloud.**
+  - Cấu hình đủ 4 secret; chạy workflow thủ công lần đầu; xác nhận artifact + `$GITHUB_STEP_SUMMARY`.
+  - Seed đủ 100 user (10 tenant × 10), kiểm tra chống trùng bằng đếm `ux_sim_users`; lưu telemetry thật (`supabase_cloud=true`), không fallback SQLite.
+  - Chạy 3 lần khác ngày; so sánh scorecard (TTFT, P95, 429 friction, refusal, follow-up, satisfaction).
+  - MCP: 1 test dương tính (SELECT trong whitelist) + test âm tính (bảng ngoài whitelist, DDL) phải bị chặn; ghi latency.
+  - Kiểm tra log/artifact không lộ secret; nêu rõ đây là **synthetic workload**, không phải người dùng thật.
+  - *Deliverable:* run ID + báo cáo UX 3 lần + bảng xu hướng.
+
+### Nhóm E — Học vận hành production
+
+- [ ] **9.13 — SLO, alert và dashboard vận hành.**
+  - Chốt SLI/SLO nội bộ: availability (probe 5 phút), tỷ lệ 5xx, p95 API, TTFB chat, 429 friction, egress, đĩa, backup thành công.
+  - Ngưỡng cảnh báo đề xuất: 5xx > 1% trong 5 phút; p95 > 1,5 s trong 10 phút; đĩa > 80%; egress > 80%; cert < 14 ngày; backup quá 26 giờ.
+  - Chọn công cụ miễn phí (uptime check + script), không thêm dịch vụ nặng lên e2-micro.
+  - *Deliverable:* `docs/operations/slo.md` + ảnh dashboard/alert test.
+
+- [ ] **9.14 — Runbook sự cố & diễn tập không phá hoại.**
+  - Viết runbook cho: LLM 429/5xx, PostgreSQL mất kết nối, đĩa 80%, cert hết hạn, egress 80%, deploy lỗi, prune attachment lỗi.
+  - Mỗi mục: dấu hiệu ➔ kiểm tra ➔ giảm thiểu ➔ xác minh ➔ phòng ngừa; lệnh copy-paste được.
+  - Diễn tập trên staging/local: kill PostgreSQL, chặn API key, làm đầy đĩa bằng file tạm rồi xoá, `certbot renew --dry-run`; **không** xoá volume, không chạy `down -v`.
+  - Rollback: deploy lại image `previous` (2.5.0) với schema 0011 còn nguyên — app cũ bỏ qua bảng mới; chỉ thử `alembic downgrade 0011➔0010` trên **bản copy DB** vì downgrade xoá bảng attachment.
+  - Đo RTO/RPO cho từng kịch bản; ghi timeline thực tế.
+  - *Deliverable:* runbook + 3 biên bản diễn tập + post-mortem mẫu.
+
+- [ ] **9.15 — Kỷ luật phát hành (change management).**
+  - Checklist trước deploy: test xanh, 1 alembic head, backup + checksum, image digest, diff env, tag rollback, cửa sổ deploy, smoke plan.
+  - Sau deploy: health, login, upload, chat, SSE, export RAGAS, telemetry; theo dõi 24 giờ.
+  - Thực hành 1 lần release 2.6.0 và 1 lần rollback trên staging, ghi thời gian từng bước.
+  - *Deliverable:* checklist + release/rollback log.
+
+- [ ] **9.16 — Gói bằng chứng & tự vấn bảo vệ.**
+  - Tập hợp: release note, saturation, soak, egress, RAGAS, UX scorecard, runbook, drill post-mortem, link CI.
+  - Chỉ đưa số đo thật vào README/history/ROADMAP; ghi "synthetic business-hours workload", không tuyên bố 10.000 người dùng thật.
+  - Tự trả lời 10 câu: vì sao 429 tại RPM nào? tài nguyên nào bão hòa trước? phát hiện rò rỉ bằng gì? RTO/RPO? LLM chết thì sao? rollback mất gì? egress vượt thì cắt gì? RAGAS giảm thì chặn deploy thế nào? attachment có vào FAISS/RAGAS không? làm sao chứng minh user A không thấy file user B?
+  - *Deliverable:* `docs/operations/evidence-pack.md` + cập nhật checklist mục 2.
+
+**Thứ tự đề xuất:** 9.5 ➔ 9.6 ➔ 9.12 (song song) ➔ 9.7 ➔ 9.10/9.11 ➔ 9.8/9.9 (5 ngày) ➔ 9.13–9.16. Tổng thêm khoảng 1,5–2 tuần sau khi có secrets và 2.6.0 live.
+
+**Quan hệ với Sprint 10:** 9.14 chỉ là diễn tập một lần; Sprint 10 lặp lại trên production 4 tuần, thêm ZAP/Burp, uptime thật, backup hằng đêm và tối thiểu 2 sự cố thật. Không tính bài diễn tập Sprint 9 là bằng chứng vận hành 4 tuần.
 
 ---
 
