@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       target_api_url:
-        description: "Backend URL (ví dụ https://ekp.duckdns.org) hoặc asgi://local"
+        description: "Backend URL (mặc định https://api-e-k-p-neshaki091.duckdns.org) hoặc asgi://local"
         required: true
-        default: "asgi://local"
+        default: "https://api-e-k-p-neshaki091.duckdns.org"
       target_users:
         description: "Tổng số User ID seed 1 lần (mặc định 100)"
         required: false
@@ -56,7 +56,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r phase3_ux_sim/requirements.txt
-          if [ "${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'asgi://local' }}" = "asgi://local" ]; then
+          if [ "${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'https://api-e-k-p-neshaki091.duckdns.org' }}" = "asgi://local" ]; then
             pip install -r requirements.txt greenlet
           fi
 
@@ -74,7 +74,7 @@ jobs:
           SIM_MCP_ALLOWED_TABLES: ${{ vars.SIM_MCP_ALLOWED_TABLES || 'ux_sim_events,ux_sim_users,ux_sim_runs' }}
           SIM_MCP_TEST_SQL: ${{ vars.SIM_MCP_TEST_SQL || 'SELECT id, user_id, action_type, http_status, total_latency_ms FROM ux_sim_events ORDER BY timestamp_utc DESC LIMIT 5' }}
         run: |
-          TARGET_URL="${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'asgi://local' }}"
+          TARGET_URL="${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'https://api-e-k-p-neshaki091.duckdns.org' }}"
           EXTRA_FLAGS=""
           if [ "${{ inputs.seed_only }}" = "true" ]; then EXTRA_FLAGS="$EXTRA_FLAGS --seed-only"; fi
           if [ "${{ inputs.offline_llm }}" = "true" ]; then EXTRA_FLAGS="$EXTRA_FLAGS --offline-llm"; fi
