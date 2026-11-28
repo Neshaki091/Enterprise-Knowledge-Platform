@@ -64,7 +64,8 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SIM_MCP_DB_URL: ${{ secrets.SIM_MCP_DB_URL }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_EVAL: ${{ secrets.GOOGLE_API_KEY_EVAL }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_EVAL || secrets.GOOGLE_API_KEY }}
           SIM_TENANT_SECRET: ${{ secrets.SIM_TENANT_SECRET }}
           SIM_LLM_MODELS: ${{ inputs.llm_models || vars.SIM_LLM_MODELS || 'gemini-3.1-flash-lite,gemini-3.5-flash-lite' }}
           SIM_LLM_RPM_LIMIT: ${{ vars.SIM_LLM_RPM_LIMIT || '25' }}

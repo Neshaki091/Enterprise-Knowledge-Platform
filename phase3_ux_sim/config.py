@@ -62,7 +62,12 @@ class SimConfig:
         )
     )
     google_api_key: str = field(
-        default_factory=lambda: (os.getenv("SIM_LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+        default_factory=lambda: (
+            os.getenv("GOOGLE_API_KEY_EVAL")
+            or os.getenv("SIM_LLM_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or ""
+        ).strip()
     )
     llm_api_url: str = field(
         default_factory=lambda: (
