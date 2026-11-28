@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import select, update
 from app.models.user import User
 from app.models.chat_history import ChatTurn
+from app.core.config import settings
 
 
 async def register_and_get_token(client: AsyncClient, email: str, tenant_name: str, slug: str) -> str:
@@ -185,7 +186,7 @@ async def test_admin_analytics_storage_logs_quota_and_realtime_sse(client: Async
     assert t_data["live_quota"]["rpm_capacity"] == 30
     assert t_data["live_quota"]["tpm_capacity"] == 16000
     assert t_data["live_quota"]["total_requests"] >= 1
-    assert t_data["model_api_limits"]["llm"]["model"] == "gemma-4-26b-a4b-it"
+    assert t_data["model_api_limits"]["llm"]["model"] == settings.LLM_MODEL
     assert t_data["model_api_limits"]["embedding"]["limits"]["dimension"] == 786
 
     # 3. Tenant Admin xem logs & SSE realtime

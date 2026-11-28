@@ -16,7 +16,7 @@ EKP giúp nhân viên hỏi đáp tài liệu nội bộ bằng ngôn ngữ tự
 - **Hierarchical Ingestion** — Parent chunk (~1.000 tokens) giữ ngữ cảnh cho LLM, Child chunk (~200 tokens) nạp vào FAISS để tìm kiếm chính xác.
 - **FAISS mmap theo tenant** — index mở bằng `faiss.IO_FLAG_MMAP`, tách file `storage/indexes/{tenant_id}.index`; RAM ứng dụng không phình theo kích thước corpus.
 - **Hybrid Search + RRF** — hợp nhất tìm kiếm vector (FAISS) và từ khóa toàn văn (PostgreSQL FTS) bằng Reciprocal Rank Fusion.
-- **Context Filtering 3 tầng** — Dynamic Thresholding → Deduplication → Sentence Compression, giảm 60–70% token đầu vào để nằm trong hạn mức 16K TPM của Gemma.
+- **Context Filtering 3 tầng** — Dynamic Thresholding → Deduplication → Sentence Compression, giảm 60–70% token đầu vào để nằm trong hạn mức 16K TPM cấu hình cho LLM.
 - **RAG streaming SSE** — trả citations trước, sau đó stream từng token; Nginx tắt `proxy_buffering` để TTFT thấp.
 - **MCP Server tự viết** — công cụ `search_knowledge_base`, `get_document_context` cho Claude Desktop, có kiểm tra tenant/ACL và bound `top_k`.
 - **Frontend 3 tầng vai trò** — Workspace (nhân viên), Tenant Admin, Platform Admin; dashboard realtime qua SSE.
@@ -50,7 +50,7 @@ Vercel Hobby  ──── API + SSE (HTTPS) ────►  <ten>.duckdns.org
 
 **Luồng ingest:** upload → kiểm tra size/MIME → parse trong RAM → SHA-256 chống trùng → chunk parent/child → embed child chunks (Gemini Embedding API) → ghi PostgreSQL + FAISS → hủy file gốc.
 
-**Luồng hỏi đáp:** câu hỏi → kiểm tra quota (30 RPM / 16K TPM mỗi tenant) → hybrid search → lọc ngữ cảnh 3 tầng → prompt Gemma → trả lời kèm trích dẫn (JSON hoặc SSE).
+**Luồng hỏi đáp:** câu hỏi → kiểm tra quota (30 RPM / 16K TPM mỗi tenant) → hybrid search → lọc ngữ cảnh 3 tầng → prompt Gemini 3.5 Flash Lite → trả lời kèm trích dẫn (JSON hoặc SSE).
 
 ---
 
@@ -61,7 +61,7 @@ Vercel Hobby  ──── API + SSE (HTTPS) ────►  <ten>.duckdns.org
 | Backend | Python 3.11+, FastAPI, SQLAlchemy 2.0 async, Pydantic v2, Alembic |
 | CSDL | PostgreSQL 16 (RLS, FTS, `SKIP LOCKED` job queue) |
 | Vector | FAISS `faiss-cpu` với `IO_FLAG_MMAP`, index riêng từng tenant |
-| AI | Gemini Embedding API + Gemma qua Google AI Studio (không nạp model vào RAM server) |
+| AI | Gemini Embedding API + Gemini 3.5 Flash Lite qua Google AI Studio (không nạp model vào RAM server) |
 | Frontend | React 19, TypeScript, Vite, TanStack Query, Tailwind CSS, Recharts |
 | Hạ tầng | Docker Compose, Nginx (TLS, security headers, rate limit), Let's Encrypt, DuckDNS, Vercel |
 | Kiểm thử | pytest + pytest-asyncio (SQLite in-memory), Playwright E2E, bộ endpoint test riêng |
@@ -240,7 +240,7 @@ Nếu phát hiện lỗ hổng, vui lòng mở issue riêng tư hoặc liên h�
 ## Giới hạn đã biết
 
 - Hạ tầng mục tiêu là **1 GB RAM**: số người dùng đồng thời thấp, phù hợp demo/pilot chứ không phải tải production quy mô lớn.
-- Gemma qua Google AI Studio có hạn mức **30 RPM / 16K TPM**; hệ thống xếp hàng và trả `429` có kiểm soát thay vì vượt quota.
+- Gemini 3.5 Flash Lite qua Google AI Studio có hạn mức phụ thuộc model/gói; hệ thống tự áp **30 RPM / 16K TPM** mỗi tenant và trả `429` có kiểm soát thay vì vượt quota.
 - Egress GCP Always Free chỉ **1 GB/tháng** — SPA phải ở Vercel, API chỉ trả JSON/SSE.
 - Chưa có background worker độc lập: job nặng chạy qua hàng đợi PostgreSQL `SKIP LOCKED` trong tiến trình API.
 

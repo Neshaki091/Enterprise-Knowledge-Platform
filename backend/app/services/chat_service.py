@@ -5,7 +5,7 @@ Quy trình:
 1. Rate Limiting: Kiểm tra Token Bucket qua QuotaManager (30 RPM / 16K TPM).
 2. Hybrid Search: Gọi SearchService lấy ứng viên (FAISS mmap + FTS + RRF).
 3. Context Filtering: Nén 3 tầng (Thresholding -> Deduplication -> Compression) giảm 70% token.
-4. LLM Generation: Gemma 4 26B suy luận có grounding và trích dẫn chứng cứ.
+4. LLM Generation: Gemini 3.5 Flash Lite suy luận có grounding và trích dẫn chứng cứ.
 """
 
 import asyncio

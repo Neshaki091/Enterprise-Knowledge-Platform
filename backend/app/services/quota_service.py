@@ -1,7 +1,7 @@
 """
 MÔ TẢ KIẾN TRÚC:
 In-Memory Quota Manager & Token Bucket Rate Limiter (ADR-002).
-Kiểm soát hạn mức truy cập của Gemma 4 26B: 30 RPM (Requests Per Minute) và 16K TPM (Tokens Per Minute).
+Kiểm soát hạn mức truy cập của LLM Cloud: 30 RPM (Requests Per Minute) và 16K TPM (Tokens Per Minute).
 Tích hợp giám sát thời gian thực hạn mức API Key / Model và mức tiêu thụ từng Tenant mà không cần Redis.
 """
 
@@ -231,7 +231,7 @@ class QuotaManager:
         status_code: Optional[int] = None,
         error_summary: Optional[str] = None,
     ) -> None:
-        """Ghi nhận kết quả gọi API ngoài (Google Gemma / Embedding) phục vụ Dashboard."""
+        """Ghi nhận kết quả gọi API ngoài (Google Gemini / Embedding) phục vụ Dashboard."""
         target = self._upstream_stats.get(component)
         if target is None:
             return

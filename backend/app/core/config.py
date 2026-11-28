@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     FAISS_IVF_NPROBE: int = Field(default=32, ge=1)
     FAISS_PQ_TRAIN_MAX: int = Field(default=30000, ge=1000)
 
-    # Google AI Studio Unified Key (dùng chung cho cả Embedding lẫn Gemma LLM)
+    # Google AI Studio Unified Key (dùng chung cho cả Embedding lẫn LLM)
     GOOGLE_API_KEY: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
@@ -73,10 +73,10 @@ class Settings(BaseSettings):
     EMBEDDING_API_URL: Optional[str] = None
     EMBEDDING_API_KEY: Optional[str] = None
 
-    # LLM Cloud Inference (Gemma 4 26B A4B MoE / OpenAI-compatible)
+    # LLM Cloud Inference (Gemini 3.5 Flash Lite / OpenAI-compatible)
     LLM_PROVIDER: str = "google"  # "google" | "openai_compatible"
     LLM_MODEL: str = Field(
-        default="gemma-4-26b-a4b-it",
+        default="gemini-3.5-flash-lite",
         validation_alias=AliasChoices("LLM_MODEL", "GEMMA_MODEL_NAME"),
     )
     LLM_API_URL: Optional[str] = Field(

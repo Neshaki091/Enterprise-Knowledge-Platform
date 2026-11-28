@@ -5,6 +5,28 @@ Nguồn chuẩn của version backend là `backend/app/core/version.py`.
 
 ---
 
+## 2.4.2 — 2026-11-28
+
+**Trạng thái:** đã code + 63 test backend PASS; **chưa build/push/deploy**
+(production đang 2.4.0; 2.4.1 cũng chưa deploy).
+
+### Chuyển backend LLM sang Gemini 3.5 Flash Lite
+
+- Đổi mặc định `LLM_MODEL` thành `gemini-3.5-flash-lite` trong config backend,
+  `.env.example` và hai compose file.
+- Vẫn dùng **một model duy nhất**; chưa bật pool 3.5 → 3.1. Cơ chế retry
+  Exponential Backoff với 429/503 và fallback mock của mode `hybrid` giữ nguyên.
+- Không đổi embedding (`gemini-embedding-001`), context filter, quota tenant
+  30 RPM / 16K TPM, prompt grounding và sanitizer 2.4.1.
+- Cập nhật test dashboard/e2e sang model mới; 63/63 test PASS.
+- **Lưu ý deploy:** `.env` trên VPS (và `backend/.env` local nếu có) đang ghi đè
+  compose default. Phải sửa `LLM_MODEL` trong `.env` thành `gemini-3.5-flash-lite`
+  trước khi recreate backend, nếu không container vẫn dùng Gemma cũ.
+- Hạn mức RPM/TPM thực tế của Gemini 3.5 Flash Lite cần đối chiếu Google AI Studio;
+  hệ thống vẫn tự áp trần tenant 30 RPM / 16K TPM.
+
+---
+
 ## 2.4.1 — 2026-11-28
 
 **Trạng thái:** đã code + test; **chưa build/push/deploy** (production đang 2.4.0).

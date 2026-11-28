@@ -1,7 +1,7 @@
 """
 MÔ TẢ KIẾN TRÚC:
-Prompt Engineering & Anti-Hallucination Grounding cho Gemma 4 26B (SEC-006).
-Tối ưu hóa độ dài chỉ thị hệ thống để tiết kiệm hạn mức 16K TPM của Gemma 4 26B,
+Prompt Engineering & Anti-Hallucination Grounding cho Gemini 3.5 Flash Lite (SEC-006).
+Tối ưu hóa độ dài chỉ thị hệ thống để tiết kiệm hạn mức 16K TPM cấu hình cho LLM,
 đồng thời giữ nguyên quy tắc Fail-Closed (bắt buộc trích dẫn, cấm bịa đặt).
 """
 
@@ -61,7 +61,7 @@ class PromptService:
         """
         Loại bỏ phần model diễn lại prompt/quá trình self-check nhưng không gắn cờ `thought`.
 
-        Gemma đôi khi trả về một "reasoning block" dạng:
+        Model đôi khi trả về một "reasoning block" dạng:
           • User Question: ...
           • Context provided: ...
           • Constraints: ...
@@ -119,7 +119,7 @@ class PromptService:
 
     @staticmethod
     def _dedupe_paragraphs(text: str) -> str:
-        """Xoá đoạn trả lời bị lặp y hệt (Gemma hay lặp bản nháp + bản cuối)."""
+        """Xoá đoạn trả lời bị lặp y hệt (model hay lặp bản nháp + bản cuối)."""
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
         seen = set()
         unique: List[str] = []

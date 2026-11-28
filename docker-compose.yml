@@ -68,7 +68,7 @@ services:
       # AI Inference (truyền từ .env của môi trường triển khai; không bake vào image).
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-google}
-      LLM_MODEL: ${LLM_MODEL:-gemma-4-26b-a4b-it}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.5-flash-lite}
       LLM_API_URL: ${LLM_API_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-google}

@@ -1,11 +1,11 @@
 """
 MÔ TẢ KIẾN TRÚC:
-LLM Client & Inference Engine cho Gemma 4 26B A4B (`gemma-4-26b-a4b-it`) / Google Gemini / OpenAI-Compatible APIs.
+LLM Client & Inference Engine cho Gemini 3.5 Flash Lite (`gemini-3.5-flash-lite`) / Google Gemini / OpenAI-Compatible APIs.
 Hỗ trợ 4 chế độ runtime:
 - 'mock': Sinh câu trả lời giả lập có trích dẫn chuẩn dựa trên chunks đã lọc ($0, ~10ms).
 - 'retrieval_only': Chỉ trả về context trích xuất mà không gọi mô hình.
 - 'real': Gọi HTTP thật tới Cloud Inference API (dùng chung GOOGLE_API_KEY) kèm Exponential Backoff,
-          tự động lọc bỏ internal thinking tokens (`thought: True`) của Gemma 4 26B.
+          tự động lọc bỏ internal thinking tokens (`thought: True`) của Gemini/Gemma.
 - 'hybrid': Tự động chọn 'real' nếu đã cấu hình đủ URL + API Key, ngược lại fallback có kiểm soát sang 'mock'.
 """
 
@@ -40,7 +40,7 @@ class LLMService:
     @classmethod
     def _extract_google_answer(cls, parts: List[Dict[str, Any]]) -> str:
         """
-        Trích xuất nội dung câu trả lời cuối cùng từ mảng `parts` của Google Gemma 4 / Gemini.
+        Trích xuất nội dung câu trả lời cuối cùng từ mảng `parts` của Google Gemini/Gemma.
         Tự động lọc bỏ các phần suy luận nội bộ (`thought: True`) để chỉ trả câu trả lời sạch cho người dùng.
         """
         final_pieces = [
@@ -177,7 +177,7 @@ class LLMService:
                         else:
                             answer = data["choices"][0]["message"]["content"]
 
-                        # Gemma đôi khi trả reasoning/self-check không gắn cờ thought.
+                        # Một số model Gemini/Gemma trả reasoning/self-check không gắn cờ thought.
                         answer = PromptService.sanitize_answer(answer)
                         output_tokens = len(answer) // 4
                         return answer, estimated_input_tokens + output_tokens

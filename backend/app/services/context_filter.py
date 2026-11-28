@@ -1,7 +1,7 @@
 """
 MÔ TẢ KIẾN TRÚC:
 Context Filtering & Compression Pipeline 3 tầng (ADR-006).
-Tối ưu đặc thù cho hạn mức 16K TPM (Tokens Per Minute) của Gemma 4 26B:
+Tối ưu đặc thù cho hạn mức 16K TPM (Tokens Per Minute) cấu hình cho LLM:
 - Tầng 1: Dynamic Thresholding + Chunk Cap - Lọc bỏ các chunk dưới ngưỡng RRF tuyệt đối/tương đối
   và giới hạn tối đa số chunk đưa vào LLM (mặc định tối đa 3 chunks).
 - Tầng 2: Structural Cleanup & Cross-chunk Deduplication - Làm sạch Markdown nhiễu,
@@ -84,7 +84,7 @@ def _truncate_to_token_budget(text: str, max_tokens: int) -> str:
 
 
 class ContextFilterPipeline:
-    """Bộ lọc ngữ cảnh 3 tầng tối ưu hóa cho giới hạn 16K TPM của Gemma 4 26B."""
+    """Bộ lọc ngữ cảnh 3 tầng tối ưu hóa cho giới hạn 16K TPM cấu hình cho LLM."""
 
     MIN_RRF_THRESHOLD: float = 0.005
     RELATIVE_RRF_RATIO: float = 0.55
@@ -311,7 +311,7 @@ class ContextFilterPipeline:
         max_chunks: Optional[int] = None,
         max_context_tokens: Optional[int] = None,
     ) -> Tuple[str, Dict[str, Any]]:
-        """Điều phối toàn bộ Pipeline 3 tầng theo ngân sách token của Gemma 4 26B."""
+        """Điều phối toàn bộ Pipeline 3 tầng theo ngân sách token cấu hình cho LLM."""
         cap_chunks = max_chunks if max_chunks is not None else cls.DEFAULT_MAX_CHUNKS
         cap_tokens = max_context_tokens if max_context_tokens is not None else cls.DEFAULT_MAX_CONTEXT_TOKENS
 

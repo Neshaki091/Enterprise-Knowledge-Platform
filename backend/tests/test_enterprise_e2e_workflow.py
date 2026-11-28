@@ -244,14 +244,14 @@ async def test_real_ingest_mock_data_and_query_chunks_first_before_llm(client: A
 
 @pytest.mark.asyncio
 async def test_real_llm_http_transport_openai_and_google_retry():
-    """Kiểm chứng giao tiếp HTTP thật của LLMService (lọc thought part của Gemma 4 26B + retry 429/503) và batching 10 chunks của EmbeddingService."""
+    """Kiểm chứng giao tiếp HTTP thật của LLMService (lọc thought part của Gemini 3.5 Flash Lite + retry 429/503) và batching 10 chunks của EmbeddingService."""
     attempts = {"count": 0}
 
     def openai_mock_handler(request: httpx.Request) -> httpx.Response:
         attempts["count"] += 1
         assert request.url.path.endswith("/chat/completions")
         body = json.loads(request.content.decode("utf-8"))
-        assert body["model"] == "gemma-4-26b-a4b-it"
+        assert body["model"] == "gemini-3.5-flash-lite"
         if attempts["count"] == 1:
             return httpx.Response(429, json={"error": "Rate limit"})
         return httpx.Response(
@@ -275,7 +275,7 @@ async def test_real_llm_http_transport_openai_and_google_retry():
         settings.LLM_API_URL = "https://mock-llm.local/v1"
         settings.LLM_API_KEY = "test-secret-key"
         settings.LLM_PROVIDER = "openai_compatible"
-        settings.LLM_MODEL = "gemma-4-26b-a4b-it"
+        settings.LLM_MODEL = "gemini-3.5-flash-lite"
 
         answer, tokens = await LLMService.generate_answer(
             query="Quy định là gì?",
@@ -287,7 +287,7 @@ async def test_real_llm_http_transport_openai_and_google_retry():
         assert "Trả lời thật từ Gemma API" in answer
         assert tokens > 0
 
-        # Kiểm chứng Google Gemma 4 26B A4B dùng chung GOOGLE_API_KEY, lọc bỏ part thought=True và retry khi 503
+        # Kiểm chứng Google Gemini 3.5 Flash Lite dùng chung GOOGLE_API_KEY, lọc bỏ part thought=True và retry khi 503
         gemma_attempts = {"count": 0}
 
         def google_mock_handler(request: httpx.Request) -> httpx.Response:
@@ -314,7 +314,7 @@ async def test_real_llm_http_transport_openai_and_google_retry():
         settings.LLM_API_KEY = None
         settings.GOOGLE_API_KEY = "shared-google-key"
         settings.LLM_PROVIDER = "google"
-        settings.LLM_MODEL = "gemma-4-26b-a4b-it"
+        settings.LLM_MODEL = "gemini-3.5-flash-lite"
 
         g_answer, _ = await LLMService.generate_answer(
             query="Test Google",
