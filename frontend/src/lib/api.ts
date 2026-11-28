@@ -1,6 +1,6 @@
 /** Các hàm gọi API nghiệp vụ đã định kiểu, dùng chung toàn ứng dụng. */
 
-import { request } from "./api-client";
+import { downloadFile, request } from "./api-client";
 import type {
   BusinessAdminDashboard,
   ChatFeedbackCreate,
@@ -156,6 +156,14 @@ export const chatApi = {
     request<ChatQueryResponse>("/api/v1/chat/query", { method: "POST", body: payload }),
   feedback: (payload: ChatFeedbackCreate): Promise<ChatFeedbackResponse> =>
     request<ChatFeedbackResponse>("/api/v1/chat/feedback", { method: "POST", body: payload }),
+  exportRagas: (month: string, includeMock = false): Promise<void> =>
+    downloadFile(
+      withQuery("/api/v1/chat/export", {
+        month,
+        include_mock: includeMock ? "true" : undefined,
+      }),
+      `ragas_${month}.jsonl.gz`,
+    ),
 };
 
 export const dashboardApi = {

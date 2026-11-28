@@ -7,6 +7,7 @@ from app.models.token import RevokedToken
 from app.models.document import Document
 from app.models.chunk import DocumentParentChunk, DocumentChildChunk
 from app.models.feedback import ChatFeedback
+from app.models.chat_history import ChatTurn
 from app.models.telemetry import TelemetryLog
 from app.models.external_db import ExternalDBConnector
 
@@ -23,6 +24,7 @@ __all__ = [
     "DocumentParentChunk",
     "DocumentChildChunk",
     "ChatFeedback",
+    "ChatTurn",
     "TelemetryLog",
     "ExternalDBConnector",
 ]

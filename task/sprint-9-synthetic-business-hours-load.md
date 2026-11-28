@@ -4,7 +4,7 @@
 
 **Ước tính thời gian:** 2 – 3 tuần
 
-**Trạng thái:** 🟢 Đang triển khai (Phase 2 đã hoàn thành)
+**Trạng thái:** 🟢 Đang triển khai — tool & workflow đã xong, lần chạy live đầu tiên 2026-11-26; còn secrets Supabase/Google, seed 100 user, k6 stress + soak (xem mục 0B)
 
 ---
 
@@ -26,6 +26,30 @@
 7. **Hành vi ngẫu nhiên & Trần 20 LLM Query/Run bảo vệ Egress < 0,8 GB/tháng:**
    - Mỗi lần chạy lấy mẫu ngẫu nhiên user (`random.sample`), số bước ngẫu nhiên (`1..N`) và hành động ngẫu nhiên (không gò ép làm đủ mọi bước).
    - Giới hạn cứng `SIM_MAX_LLM_QUERIES=20` cho toàn bộ phiên chạy (các lượt vượt trần tự chuyển sang `search_hybrid` / `list_documents` nhẹ), đảm bảo khi chạy chung với tải SOAK 5 ngày (`0,6–0,8 GB/tháng`) vẫn không vượt ngưỡng `0,8 GB` egress của GCP Always Free.
+
+---
+
+## 0B. TIẾN ĐỘ THỰC TẾ (cập nhật 2026-11-28)
+
+### Đã hoàn thành
+
+- [x] **Công cụ `phase3_ux_sim/`** — đủ 8 module: `config`, `storage` (SQLAlchemy async, SQLite fallback khi thiếu `SUPABASE_DB_URL`), `user_seeder` (seed 1 lần, kiểm tra chống trùng), `llm_persona` (pool 2 model Flash-Lite, RPM/RPD riêng + failover), `agent_simulator` (hành động dựa trên `last_query`/`last_llm_reply`, trần `SIM_MAX_LLM_QUERIES`), `mcp_test`, `metrics` (UX Scorecard + egress), `runner`.
+- [x] **Workflow GitHub Actions** `.github/workflows/phase3-ux-sim.yml` — chỉ chạy tay (`workflow_dispatch`), schedule đang tắt; upload artifact báo cáo 30 ngày.
+- [x] **Vệ sinh bí mật** — bỏ secret hardcode, `.env_vu`/`*.db`/`reports/`/`_asgi_faiss/` đã gitignore; commit `43e0f2e`.
+- [x] **Chạy live lần đầu** (2026-11-26, target backend production):
+  - Seed 5 user / 3 user hoạt động / 11 hành động (`login` 3, `list_documents` 7, `search_hybrid` 1); 0 lỗi 5xx, 0 lần 429.
+  - Search P95 `1.180 ms`; egress `14,68 KB`; ngoại suy `+0,315 MB/tháng` nếu chạy 22 ngày.
+  - **MCP Zero-Knowledge PASS vào PostgreSQL/Supabase DB dự án cũ:** SELECT `documents` trả 3 dòng, `DROP TABLE` bị chặn; latency roundtrip `8,1 s`.
+  - Báo cáo: `phase3_ux_sim/reports/latest_ux_report.md` (run `6bf71bea…`).
+- [x] **Xác minh hạ tầng phát hành** — CI xanh + workflow **Build, Push & Deploy** xanh cho commit `43e0f2e`; backend production chạy `2.3.3`, `/health` công khai trả `"version":"2.3.3"`.
+
+### Chưa hoàn thành
+
+- [ ] Cấu hình GitHub Secrets `SUPABASE_DB_URL`, `SIM_MCP_DB_URL`, `GOOGLE_API_KEY`, `SIM_TENANT_SECRET`; chạy workflow Phase 3 trên GitHub Actions lần đầu (hiện `total_count = 0`).
+- [ ] Seed đủ **100 user** (lần đầu mới 5) và lưu telemetry thật lên **Supabase Cloud** thay vì SQLite fallback (`supabase_cloud: false` trong run đầu).
+- [ ] Bài tập 9.1–9.4: k6 journey 1–4, stress tìm điểm bão hòa (429 đầu tiên), soak gộp 5 ngày làm việc.
+- [ ] Đo/báo cáo egress thực tế, RSS/CPU/connection, đối chiếu trần 25 RPM và 16K TPM.
+- [ ] Hoàn tất checklist nghiệm thu mục 2 và phần phản biện.
 
 ---
 
@@ -95,6 +119,8 @@
 ---
 
 ## 2. CHECKLIST NGHIỆM THU SPRINT 9
+
+> Trạng thái công cụ UX Simulation: xem mục 0B. Checklist dưới đây áp dụng cho phần tải k6/soak — hiện chưa mục nào được đánh dấu.
 
 - [ ] Chạy đủ 9 giờ/ngày với 4.000–8.000 request (200 req/giờ/user, 3–5 phiên đồng thời): 0 lỗi 5xx, `http_req_failed` < 1%, p95 API < 1,5 s; không có 429 ngoài bài stress.
 - [ ] Báo cáo điểm bão hòa: RPM/TPM/số phiên SSE/CPU/RAM tại lần 429 đầu tiên, đối chiếu với 30 RPM và 16K TPM.

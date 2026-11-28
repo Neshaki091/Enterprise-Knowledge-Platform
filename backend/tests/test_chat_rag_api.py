@@ -8,6 +8,10 @@ Kiểm định:
 - Đánh giá tỷ lệ nén token của Pipeline 3 tầng.
 """
 
+import gzip
+import json
+from datetime import datetime, timezone
+
 import pytest
 from httpx import AsyncClient
 
@@ -248,3 +252,114 @@ async def test_quota_manager_16k_tpm_and_refund():
     # Yêu cầu 15.500 token vừa khít ngân sách còn lại (15.800) -> được cấp phép
     ok3, wait3 = await qm.acquire(tid, estimated_tokens=15500)
     assert ok3 is True and wait3 is None
+
+
+@pytest.mark.asyncio
+async def test_chat_query_persists_rag_turn_and_history(client: AsyncClient, db_session):
+    """Một lượt chat phải lưu query/answer/context/chunk_id và trả được qua /chat/history."""
+    from sqlalchemy import select
+
+    from app.models.chat_history import ChatTurn
+
+    token = await register_and_get_token(client, "trace_user@acme.com", "Trace Corp", "trace-corp")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    doc = "Chính sách nghỉ phép: mỗi nhân viên được 14 ngày phép có lương mỗi năm."
+    files = {"file": ("trace_policy.txt", doc.encode("utf-8"), "text/plain")}
+    assert (await client.post("/api/v1/documents/upload", files=files, headers=headers)).status_code == 201
+
+    query = "Nhân viên được bao nhiêu ngày phép?"
+    res = await client.post(
+        "/api/v1/chat/query",
+        json={"query": query, "top_k": 3, "mode": "mock"},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["session_id"]
+
+    turns = (await db_session.execute(select(ChatTurn))).scalars().all()
+    assert len(turns) == 1
+    turn = turns[0]
+    assert turn.query == query
+    assert "14 ngày" in turn.answer
+    assert turn.session_id is not None
+    assert turn.contexts
+    assert turn.chunk_ids
+    assert turn.llm_context
+
+    history = await client.get("/api/v1/chat/history", headers=headers)
+    assert history.status_code == 200
+    payload = history.json()
+    assert payload["total"] == 1
+    assert payload["turns"][0]["query"] == query
+    assert payload["turns"][0]["answer"] == turn.answer
+    assert payload["turns"][0]["chunk_ids"] == turn.chunk_ids
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    # Mặc định loại mock/retrieval_only khỏi dataset RAGAS; file luôn nén gzip.
+    default_export = await client.get(f"/api/v1/chat/export?month={month}", headers=headers)
+    assert default_export.status_code == 200
+    assert "application/gzip" in default_export.headers.get("content-type", "")
+    default_text = gzip.decompress(default_export.content).decode("utf-8")
+    assert not [line for line in default_text.splitlines() if line.strip()]
+
+    feedback = await client.post(
+        "/api/v1/chat/feedback",
+        json={"query": query, "answer": data["answer"], "rating": "THUMBS_UP"},
+        headers=headers,
+    )
+    assert feedback.status_code == 201
+    await db_session.refresh(turn)
+    assert turn.feedback_rating == "THUMBS_UP"
+
+    export = await client.get(
+        f"/api/v1/chat/export?month={month}&include_mock=true",
+        headers=headers,
+    )
+    assert export.status_code == 200
+    assert "application/gzip" in export.headers.get("content-type", "")
+    assert "attachment" in export.headers.get("content-disposition", "")
+    assert ".jsonl.gz" in export.headers.get("content-disposition", "")
+    exported = [
+        json.loads(line)
+        for line in gzip.decompress(export.content).decode("utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(exported) == 1
+    assert exported[0]["user_input"] == query
+    assert "14 ngày" in exported[0]["response"]
+    assert exported[0]["retrieved_contexts"]
+    assert exported[0]["metadata"]["chunk_ids"] == turn.chunk_ids
+    assert exported[0]["metadata"]["llm_context"]
+    assert exported[0]["metadata"]["feedback_rating"] == "THUMBS_UP"
+
+
+@pytest.mark.asyncio
+async def test_export_ragas_forbidden_for_employee(client: AsyncClient):
+    """EMPLOYEE không được xuất dữ liệu hội thoại của tenant."""
+    owner_token = await register_and_get_token(client, "export_owner@acme.com", "Export Corp", "export-corp")
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+
+    add = await client.post(
+        "/api/v1/tenants/members",
+        json={
+            "email": "export_employee@acme.com",
+            "password": "Password123!",
+            "full_name": "Export Employee",
+            "role": "EMPLOYEE",
+        },
+        headers=owner_headers,
+    )
+    assert add.status_code == 201
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "export_employee@acme.com", "password": "Password123!"},
+    )
+    employee_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    res = await client.get(f"/api/v1/chat/export?month={month}", headers=employee_headers)
+    assert res.status_code == 403

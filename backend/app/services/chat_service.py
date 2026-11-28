@@ -25,6 +25,7 @@ from app.services.search_service import SearchService
 from app.services.context_filter import ContextFilterPipeline
 from app.services.llm_service import LLMService
 from app.services.telemetry_service import TelemetryService
+from app.services.chat_history_service import ChatHistoryService
 
 
 class ChatService:
@@ -175,9 +176,44 @@ class ChatService:
             persist=True,
         )
 
+        session_id = request.session_id or uuid.uuid4()
+        await ChatHistoryService.record_turn(
+            db,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=session_id,
+            query=request.query,
+            answer=answer,
+            contexts=[
+                {
+                    "child_chunk_id": str(r.child_chunk_id),
+                    "parent_chunk_id": str(r.parent_chunk_id),
+                    "document_id": str(r.document_id),
+                    "document_title": r.document_title,
+                    "heading": r.heading,
+                    "text": r.parent_content,
+                    "rrf_score": r.rrf_score,
+                    "dense_score": r.dense_score,
+                    "sparse_score": r.sparse_score,
+                }
+                for r in retrieved_chunks
+            ],
+            citations=[c.model_dump(mode="json") for c in citations],
+            chunk_ids=[str(r.child_chunk_id) for r in retrieved_chunks],
+            llm_context=filtered_context,
+            model_name=settings.LLM_MODEL if request.mode in ("real", "hybrid") else request.mode,
+            mode=request.mode,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            input_tokens=comp_stats.get("original_tokens", 0),
+            compressed_tokens=comp_stats.get("compressed_tokens", 0),
+            output_tokens=output_tokens,
+            compression_savings_percent=float(comp_stats.get("savings_percent", 0.0)),
+        )
+
         return ChatQueryResponse(
             answer=answer,
             query=request.query,
+            session_id=session_id,
             retrieved_chunks=retrieved_chunks,
             citations=citations,
             tokens_used=tokens_used,

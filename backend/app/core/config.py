@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_BYTES: int = Field(default=25 * 1024 * 1024, ge=1024)
     DB_RLS_ENABLED: bool = False
 
+    # Chat trace & RAGAS: lưu query/answer/context snapshot để chấm điểm định kỳ.
+    # Tắt bằng CHAT_HISTORY_ENABLED=false nếu không muốn lưu nội dung hội thoại.
+    CHAT_HISTORY_ENABLED: bool = True
+    CHAT_HISTORY_RETENTION_DAYS: int = Field(default=365, ge=1, le=365)
+
     # Database
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432

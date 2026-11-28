@@ -37,6 +37,9 @@ COPY --from=builder /root/.local /home/appuser/.local
 # Sao chép mã nguồn ứng dụng
 COPY --chown=appuser:appgroup backend /app/backend
 COPY --chown=appuser:appgroup scripts/docker_entrypoint.sh /app/scripts/docker_entrypoint.sh
+# Công cụ bảo trì dữ liệu chat (export RAGAS + prune retention) chạy trong container.
+COPY --chown=appuser:appgroup scripts/export_ragas_dataset.py /app/scripts/export_ragas_dataset.py
+COPY --chown=appuser:appgroup scripts/prune_chat_history.py /app/scripts/prune_chat_history.py
 
 # Tạo thư mục lưu trữ index vector FAISS với quyền ghi
 RUN mkdir -p /app/backend/storage/indexes && \

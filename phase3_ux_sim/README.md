@@ -7,6 +7,14 @@ Công cụ độc lập phục vụ **Phase 3 (Sprint 9)** để:
 4. **Test kết nối MCP Zero-Knowledge với Supabase Cloud DB dự án cũ:** Đăng ký DB qua `/api/v1/mcp/external-db`, cấp `db_jwt`, chạy `query_enterprise_db` (`SELECT`) và kiểm định chặn `DROP TABLE`.
 5. **Tổng hợp toàn diện chỉ số UX** ra `phase3_ux_sim/reports/latest_ux_report.md` và GitHub Step Summary.
 
+## Trạng thái hiện tại (2026-11-28)
+
+- Đã commit đủ bộ module + workflow thủ công `.github/workflows/phase3-ux-sim.yml` (schedule đang tắt) tại commit `43e0f2e`.
+- **Lần chạy live đầu tiên** (2026-11-26, target backend production): seed 5 user, 3 user hoạt động, 11 hành động; 0 lỗi 5xx, 0 lần 429; search P95 `1.180 ms`; egress `14,68 KB`.
+- **MCP Zero-Knowledge: PASS** vào PostgreSQL/Supabase DB dự án cũ — SELECT `documents` trả 3 dòng, `DROP TABLE` bị chặn (latency `8,1 s`).
+- **Chưa chạy trên GitHub Actions lần nào** (`total_count = 0` trong Actions API) và telemetry vẫn là SQLite fallback vì chưa có `SUPABASE_DB_URL`/`SIM_MCP_DB_URL`/`SIM_TENANT_SECRET` trong GitHub Secrets.
+- Còn thiếu: seed đủ 100 user, telemetry thật lên Supabase Cloud, và phần tải k6 stress/soak (Bài tập 9.1–9.4 trong sprint).
+
 ## Cấu hình biến môi trường / GitHub Secrets
 
 - `SUPABASE_DB_URL`: PostgreSQL DSN của Supabase Cloud dùng để **lưu toàn bộ dữ liệu bài test UX** (`ux_sim_users`, `ux_sim_runs`, `ux_sim_events`, `ux_sim_mcp_checks`). Nếu chưa đặt khi chạy local, tool tự fallback sang `phase3_ux_sim/sim_local.db`.

@@ -10,6 +10,7 @@ Thứ tự bắt buộc:
 import asyncio
 import json
 import time
+import uuid
 import logging
 from typing import AsyncGenerator, List, Optional
 from fastapi import HTTPException, status
@@ -27,6 +28,7 @@ from app.services.search_service import SearchService
 from app.services.context_filter import ContextFilterPipeline
 from app.services.llm_service import LLMService
 from app.services.telemetry_service import TelemetryService
+from app.services.chat_history_service import ChatHistoryService
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,7 @@ class StreamingChatService:
         - Event 'done': Báo hiệu hoàn tất kèm thống kê nén token.
         """
         started = time.perf_counter()
+        session_id = request.session_id or uuid.uuid4()
         tenant_str = str(context.tenant_id)
         session_bind = db.bind
 
@@ -214,6 +217,8 @@ class StreamingChatService:
         # 7. Phát luồng câu trả lời từ LLMService (hỗ trợ cả 'real' lẫn 'mock' / 'retrieval_only')
         streamed_chars = 0
         token_buffer: List[str] = []
+        answer_parts: List[str] = []
+        first_token_at: Optional[float] = None
         buffered_chars = 0
         last_flush = time.monotonic()
         try:
@@ -222,6 +227,9 @@ class StreamingChatService:
                 context=filtered_context,
                 mode=request.mode,
             ):
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+                answer_parts.append(token_piece)
                 streamed_chars += len(token_piece)
                 token_buffer.append(token_piece)
                 buffered_chars += len(token_piece)
@@ -289,6 +297,26 @@ class StreamingChatService:
                     },
                     persist=True,
                 )
+                await ChatHistoryService.record_turn(
+                    telemetry_db,
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                    session_id=session_id,
+                    query=request.query,
+                    answer="".join(answer_parts).strip(),
+                    contexts=chunks_payload,
+                    citations=citations_data,
+                    chunk_ids=[str(r.child_chunk_id) for r in search_res.results[:request.top_k]],
+                    llm_context=filtered_context,
+                    model_name=settings.LLM_MODEL if request.mode in ("real", "hybrid") else request.mode,
+                    mode=request.mode,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    ttfb_ms=(first_token_at - started) * 1000.0 if first_token_at else None,
+                    input_tokens=stats.get("original_tokens", 0),
+                    compressed_tokens=stats.get("compressed_tokens", 0),
+                    output_tokens=output_tokens,
+                    compression_savings_percent=float(stats.get("savings_percent", 0.0)),
+                )
                 await telemetry_db.commit()
         finally:
             rls.rls_bypass.reset(bypass_token)
@@ -299,6 +327,7 @@ class StreamingChatService:
         done_payload = {
             "type": "done",
             "mode": request.mode,
+            "session_id": str(session_id),
             "tokens_saved_percent": stats.get("savings_percent", 0.0),
             "retained_chunks": stats.get("retained_chunks", 0),
             "output_tokens": output_tokens,

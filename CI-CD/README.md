@@ -23,6 +23,10 @@ Nguyên tắc cốt lõi: **VPS không build**. Image được build trên máy 
 > Hiện có thể chạy **build + deploy tự động** bằng `.github/workflows/build.yml`
 > (tuỳ chọn, xem mục 6b), hoặc deploy từ máy local bằng `07_deploy_now.sh`.
 
+> **Đã xác minh 2026-11-27 (UTC):** commit `43e0f2e` — CI xanh (54 test + frontend build);
+> workflow **Build, Push & Deploy** build/push/deploy tag `2.3.3` thành công, deploy VPS
+> xanh trong 20 s và `PUBLIC_HEALTH_URL` trả `"status":"healthy"`, `"version":"2.3.3"`.
+
 ---
 
 ## 1. Thành phần

@@ -303,3 +303,25 @@ export async function openSseStream(
   if (!response.ok) throw await toApiError(response);
   await consumeSse(response, onEvent, signal);
 }
+
+/** Tải file có xác thực (ndjson/JSON/CSV) và kích hoạt download của trình duyệt. */
+export async function downloadFile(path: string, fallbackName = "export.jsonl.gz"): Promise<void> {
+  const response = await fetchWithAuth(path, {
+    headers: { Accept: "application/gzip" },
+  });
+  if (!response.ok) throw await toApiError(response);
+
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  const filename = match?.[1] ? decodeURIComponent(match[1]) : fallbackName;
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

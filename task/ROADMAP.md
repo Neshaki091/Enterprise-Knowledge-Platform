@@ -11,26 +11,26 @@
 ### 🟢 Phase 1: Backend Core, RAG Pipeline & Low-Memory Hardening
 | Sprint | Giai đoạn | Tên Sprint & Trọng tâm | Trạng thái | File chi tiết |
 |---|---|---|---|---|
-| **Sprint 1** | Phase 1 | Cấu trúc Dự án & PostgreSQL 16 Low-Memory | ✅ **Hoàn thành** | [sprint-1-foundation-db.md](task/sprint-1-foundation-db.md) |
-| **Sprint 2** | Phase 1 | Auth Service, JWT Rotation & Tenant Context | ✅ **Hoàn thành** | [sprint-2-auth-tenant-context.md](task/sprint-2-auth-tenant-context.md) |
-| **Sprint 3** | Phase 1 | Ingestion Zero-Storage & Hierarchical Chunking | ✅ **Hoàn thành** | [sprint-3-ingestion-hierarchical.md](task/sprint-3-ingestion-hierarchical.md) |
-| **Sprint 4** | Phase 1 | FAISS mmap Engine & Hybrid Search RRF | ✅ **Hoàn thành** | [sprint-4-faiss-mmap-hybrid.md](task/sprint-4-faiss-mmap-hybrid.md) |
-| **Sprint 5** | Phase 1 | **Tự viết Custom MCP Server & Tool Authorization** | ✅ **Hoàn thành** | [sprint-5-mcp-server-tools.md](task/sprint-5-mcp-server-tools.md) |
-| **Sprint 6** | Phase 1 | Context Filtering & Gemma 4 26B Integration | ✅ **Hoàn thành** | [sprint-6-context-filtering-gemma.md](task/sprint-6-context-filtering-gemma.md) |
-| **Sprint 7** | Phase 1 | 3-Tier Dashboards, Realtime Analytics & Streaming SSE API | ✅ **Hoàn thành** | [sprint-7-dashboards-sse.md](task/sprint-7-dashboards-sse.md) |
-| **Sprint 8** | Phase 1 | Docker hóa, GCP e2-micro 1GB Setup & Release | ✅ **Hoàn thành (Kết thúc Phase 1)** | [sprint-8-gcp-deploy-hardening.md](task/sprint-8-gcp-deploy-hardening.md) |
+| **Sprint 1** | Phase 1 | Cấu trúc Dự án & PostgreSQL 16 Low-Memory | ✅ **Hoàn thành** | [sprint-1-foundation-db.md](sprint-1-foundation-db.md) |
+| **Sprint 2** | Phase 1 | Auth Service, JWT Rotation & Tenant Context | ✅ **Hoàn thành** | [sprint-2-auth-tenant-context.md](sprint-2-auth-tenant-context.md) |
+| **Sprint 3** | Phase 1 | Ingestion Zero-Storage & Hierarchical Chunking | ✅ **Hoàn thành** | [sprint-3-ingestion-hierarchical.md](sprint-3-ingestion-hierarchical.md) |
+| **Sprint 4** | Phase 1 | FAISS mmap Engine & Hybrid Search RRF | ✅ **Hoàn thành** | [sprint-4-faiss-mmap-hybrid.md](sprint-4-faiss-mmap-hybrid.md) |
+| **Sprint 5** | Phase 1 | **Tự viết Custom MCP Server & Tool Authorization** | ✅ **Hoàn thành** | [sprint-5-mcp-server-tools.md](sprint-5-mcp-server-tools.md) |
+| **Sprint 6** | Phase 1 | Context Filtering & Gemma 4 26B Integration | ✅ **Hoàn thành** | [sprint-6-context-filtering-gemma.md](sprint-6-context-filtering-gemma.md) |
+| **Sprint 7** | Phase 1 | 3-Tier Dashboards, Realtime Analytics & Streaming SSE API | ✅ **Hoàn thành** | [sprint-7-dashboards-sse.md](sprint-7-dashboards-sse.md) |
+| **Sprint 8** | Phase 1 | Docker hóa, GCP e2-micro 1GB Setup & Release | ✅ **Hoàn thành (Kết thúc Phase 1)** | [sprint-8-gcp-deploy-hardening.md](sprint-8-gcp-deploy-hardening.md) |
 
 ---
 
 ### 🔵 Phase 2 (Mới): Enterprise Frontend & Realtime Admin Console
-> Kế hoạch tổng thể: [phase-2-frontend-plan.md](task/phase-2-frontend-plan.md)
+> Kế hoạch tổng thể: [phase-2-frontend-plan.md](phase-2-frontend-plan.md)
 
 | Sprint | Giai đoạn | Tên Sprint & Trọng tâm | Trạng thái | File chi tiết |
 |---|---|---|---|---|
-| **Sprint F1** | Phase 2 | Frontend Foundation, Auth JWT Rotation & Tenant Switcher | ✅ **Hoàn thành** | [sprint-f1-frontend-foundation-auth.md](task/sprint-f1-frontend-foundation-auth.md) |
-| **Sprint F2** | Phase 2 | Knowledge Hub, Hybrid Search Explorer & RAG Chat SSE | ✅ **Hoàn thành** | [sprint-f2-knowledge-hub-rag-sse.md](task/sprint-f2-knowledge-hub-rag-sse.md) |
-| **Sprint F3** | Phase 2 | 3-Tier Dashboards, Realtime Analytics & Storage/Quota Console | ✅ **Hoàn thành** | [sprint-f3-admin-realtime-analytics.md](task/sprint-f3-admin-realtime-analytics.md) |
-| **Sprint F4** | Phase 2 | Nginx Static Delivery, Docker Compose & Playwright E2E | ✅ **Hoàn thành** | [sprint-f4-frontend-docker-nginx-e2e.md](task/sprint-f4-frontend-docker-nginx-e2e.md) |
+| **Sprint F1** | Phase 2 | Frontend Foundation, Auth JWT Rotation & Tenant Switcher | ✅ **Hoàn thành** | [sprint-f1-frontend-foundation-auth.md](sprint-f1-frontend-foundation-auth.md) |
+| **Sprint F2** | Phase 2 | Knowledge Hub, Hybrid Search Explorer & RAG Chat SSE | ✅ **Hoàn thành** | [sprint-f2-knowledge-hub-rag-sse.md](sprint-f2-knowledge-hub-rag-sse.md) |
+| **Sprint F3** | Phase 2 | 3-Tier Dashboards, Realtime Analytics & Storage/Quota Console | ✅ **Hoàn thành** | [sprint-f3-admin-realtime-analytics.md](sprint-f3-admin-realtime-analytics.md) |
+| **Sprint F4** | Phase 2 | Nginx Static Delivery, Docker Compose & Playwright E2E | ✅ **Hoàn thành** | [sprint-f4-frontend-docker-nginx-e2e.md](sprint-f4-frontend-docker-nginx-e2e.md) |
 
 > **Xác minh 2026-11-26:** F1–F4 hoàn tất; Playwright E2E 2/2 PASS; container Nginx healthy; SPA production build phục vụ qua Nginx.
 
@@ -46,5 +46,7 @@
 
 | Sprint | Giai đoạn | Tên Sprint & Trọng tâm | Trạng thái | File chi tiết |
 |---|---|---|---|---|
-| **Sprint 9** | Phase 3 | LLM-Driven UX Simulation (`phase3_ux_sim/`, 100 LLM Users 1-time Seed, Supabase Cloud Telemetry & MCP Test via GitHub Actions) + Saturation k6 | 🟢 **Đang triển khai** | [sprint-9-synthetic-business-hours-load.md](task/sprint-9-synthetic-business-hours-load.md) |
-| **Sprint 10** | Phase 3 | Pentest Bảo mật, Vận hành 4 tuần trên VPS thật & Portfolio | ⏳ **Chờ Sprint 9** | [sprint-10-pentest-operations.md](task/sprint-10-pentest-operations.md) |
+| **Sprint 9** | Phase 3 | LLM-Driven UX Simulation (`phase3_ux_sim/`, 100 LLM Users 1-time Seed, Supabase Cloud Telemetry & MCP Test via GitHub Actions) + Saturation k6 | 🟢 **Đang triển khai** | [sprint-9-synthetic-business-hours-load.md](sprint-9-synthetic-business-hours-load.md) |
+| **Sprint 10** | Phase 3 | Pentest Bảo mật, Vận hành 4 tuần trên VPS thật & Portfolio | ⏳ **Chờ Sprint 9** | [sprint-10-pentest-operations.md](sprint-10-pentest-operations.md) |
+
+> **Tiến độ Sprint 9 (cập nhật 2026-11-28):** Công cụ `phase3_ux_sim/` + workflow thủ công đã commit (`43e0f2e`). Lần chạy live đầu tiên (2026-11-26, backend production) seed 5 user, chạy 11 hành động — 0 lỗi 5xx, 0 lần 429, search P95 1,18 s — và **MCP Zero-Knowledge PASS vào PostgreSQL/Supabase DB dự án cũ** (SELECT `documents` 3 dòng, chặn `DROP TABLE`). Còn thiếu: secrets Supabase/Google trên GitHub, seed đủ 100 user, telemetry thật lên Supabase Cloud, chạy workflow GitHub lần đầu, k6 stress + soak 5 ngày.

@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Database,
+  Download,
   FileStack,
   FolderTree,
   Pause,
@@ -17,7 +18,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { useAuth } from "@/features/auth/auth-context";
-import { dashboardApi } from "@/lib/api";
+import { chatApi, dashboardApi } from "@/lib/api";
 import { describeApiError } from "@/lib/api-client";
 import { formatBytes, formatNumber, formatPercent } from "@/lib/utils";
 import type { TenantAnalytics } from "@/lib/types";
@@ -27,6 +28,8 @@ import { StatCard } from "@/components/layout/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert } from "@/components/feedback/alert";
@@ -85,12 +88,25 @@ function quotaValue(quota: Record<string, unknown>, key: string, fallback: numbe
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+const CURRENT_MONTH = new Date().toISOString().slice(0, 7);
+const RETENTION_MONTHS = 12;
+const MIN_MONTH = new Date(
+  Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - RETENTION_MONTHS, 1),
+)
+  .toISOString()
+  .slice(0, 7);
+
 /** Tenant Admin Console (Tier 2): lưu trữ DB/FAISS, hạn ngạch realtime, hiệu năng và audit logs. */
 export function TenantAdminPage() {
   const { me } = useAuth();
   const tenantKey = me?.tenant_id ?? "";
   const [eventType, setEventType] = useState("");
   const [limit, setLimit] = useState(50);
+  const [exportMonth, setExportMonth] = useState(CURRENT_MONTH);
+  const [includeMock, setIncludeMock] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportSuccess, setExportSuccess] = useState<string | null>(null);
 
   const dashboardQuery = useQuery({
     queryKey: ["dashboard", "tenant", tenantKey],
@@ -125,6 +141,20 @@ export function TenantAdminPage() {
     void dashboardQuery.refetch();
     void analyticsQuery.refetch();
     void logsQuery.refetch();
+  };
+
+  const exportRagasDataset = async (): Promise<void> => {
+    setExporting(true);
+    setExportError(null);
+    setExportSuccess(null);
+    try {
+      await chatApi.exportRagas(exportMonth, includeMock);
+      setExportSuccess(`Đã tải dataset RAGAS nén gzip của tháng ${exportMonth}.`);
+    } catch (error) {
+      setExportError(describeApiError(error, "Không thể xuất dữ liệu RAGAS."));
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -163,6 +193,63 @@ export function TenantAdminPage() {
           là ảnh chụp gần nhất từ REST API.
         </Alert>
       ) : null}
+
+      <Card>
+        <CardHeader className="space-y-1">
+          <CardTitle className="flex items-center gap-1.5">
+            <Download className="h-4 w-4 text-sky-500" /> Xuất dữ liệu đánh giá RAGAS
+          </CardTitle>
+          <CardDescription>
+            Tải JSONL.GZ (nén gzip) các lượt hỏi-đáp của tenant hiện tại trong tháng đã chọn: query, answer, context,
+            chunk ID, citations và metadata. Hệ thống chỉ xuất dữ liệu; việc chấm RAGAS thực hiện bên ngoài.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="w-full space-y-1.5 sm:w-52">
+              <Label htmlFor="ragas-month">Tháng dữ liệu (UTC)</Label>
+              <Input
+                id="ragas-month"
+                type="month"
+                min={MIN_MONTH}
+                max={CURRENT_MONTH}
+                value={exportMonth}
+                onChange={(event) => setExportMonth(event.target.value)}
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void exportRagasDataset()}
+              disabled={exporting || !exportMonth}
+            >
+              <Download className={exporting ? "animate-pulse" : undefined} />
+              {exporting ? "Đang xuất..." : "Xuất JSONL.GZ"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            File .jsonl.gz chứa nội dung hội thoại thật của doanh nghiệp; không chia sẻ công khai. Chỉ OWNER/ADMIN
+            được tải. Trace hội thoại được lưu tối đa 365 ngày để giới hạn dung lượng demo.
+          </p>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-input accent-primary"
+              checked={includeMock}
+              onChange={(event) => setIncludeMock(event.target.checked)}
+            />
+            Bao gồm mock/retrieval_only (chỉ dùng để test, không nên chấm RAGAS)
+          </label>
+          {exportError ? (
+            <Alert variant="destructive" title="Xuất dữ liệu thất bại">
+              {exportError}
+            </Alert>
+          ) : null}
+          {exportSuccess ? (
+            <p className="text-xs font-medium text-emerald-600">{exportSuccess}</p>
+          ) : null}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {dashboardQuery.isLoading ? (

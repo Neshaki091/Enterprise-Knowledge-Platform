@@ -9,8 +9,9 @@ Kiểm định:
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from app.models.user import User
+from app.models.chat_history import ChatTurn
 
 
 async def register_and_get_token(client: AsyncClient, email: str, tenant_name: str, slug: str) -> str:
@@ -30,7 +31,7 @@ async def register_and_get_token(client: AsyncClient, email: str, tenant_name: s
 
 
 @pytest.mark.asyncio
-async def test_streaming_chat_sse_endpoint(client: AsyncClient):
+async def test_streaming_chat_sse_endpoint(client: AsyncClient, db_session):
     """Kiểm thử stream câu trả lời qua SSE nhận được các events: citations, token, done."""
     token = await register_and_get_token(client, "stream_user@corp.com", "Stream Corp", "stream-corp")
     headers = {"Authorization": f"Bearer {token}"}
@@ -53,6 +54,15 @@ async def test_streaming_chat_sse_endpoint(client: AsyncClient):
     assert "citations" in body
     assert "token" in body
     assert "done" in body
+    assert '"session_id"' in body
+
+    turns = (await db_session.execute(select(ChatTurn))).scalars().all()
+    assert len(turns) == 1
+    assert turns[0].query == query_payload["query"]
+    assert "sao chép dữ liệu" in turns[0].answer
+    assert turns[0].contexts
+    assert turns[0].chunk_ids
+    assert turns[0].ttfb_ms is not None
 
 
 @pytest.mark.asyncio

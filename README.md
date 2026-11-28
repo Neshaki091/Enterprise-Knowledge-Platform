@@ -131,7 +131,7 @@ npm run build      # typecheck + build production
 ## Kiểm thử
 
 ```bash
-# Backend: 52 test, SQLite in-memory, không gọi AI API
+# Backend: 60 test, SQLite in-memory, không gọi AI API
 python -m pytest backend/tests -v
 
 # Frontend E2E (cần stack đang chạy)
@@ -145,6 +145,23 @@ Bộ kiểm thử endpoint tổng thể:
 python endpoint_test/run_all_endpoint_tests.py
 # Báo cáo: endpoint_test/endpoint_test_report_<YYYY-MM-DD>.md (không commit)
 ```
+
+---
+
+## Lưu trace hội thoại & xuất RAGAS
+
+- Mỗi lượt chat được lưu vào bảng `chat_turns` (RLS theo tenant): query, answer,
+  snapshot context, chunk IDs, citations, model, latency, token.
+- Xem lại lượt của chính mình: `GET /api/v1/chat/history`.
+- Xuất dataset theo tháng để chấm RAGAS **bên ngoài** hệ thống: nút **Xuất JSONL.GZ**
+  trong Quản trị doanh nghiệp (OWNER/ADMIN), hoặc CLI
+  `scripts/export_ragas_dataset.py`; hướng dẫn tại
+  [`scripts/README_ragas_export.md`](scripts/README_ragas_export.md).
+- File export **nén gzip** (`.jsonl.gz`), mặc định bỏ lượt `mock`/`retrieval_only`.
+- Backend **không cài RAGAS** và không chạy evaluator; file export chứa nội dung
+  hội thoại nên không commit. Retention tối đa 365 ngày
+  (`CHAT_HISTORY_RETENTION_DAYS`), dọn bằng `scripts/prune_chat_history.py`;
+  tắt hoàn toàn bằng `CHAT_HISTORY_ENABLED=false`.
 
 ---
 
@@ -196,6 +213,9 @@ Các luồng gọi Google AI thật không nằm trong lần đo này (không d�
 - **Auth:** JWT access ngắn hạn + refresh token rotation theo family; phát hiện reuse và thu hồi cả family.
 - **Fail-closed:** thiếu cấu hình bảo mật hoặc thiếu quyền → từ chối, không chạy ở chế độ mở.
 - **Tối thiểu bề mặt:** backend không publish cổng ra host; chỉ Nginx 80/443; Swagger tắt ở production.
+- **Chat trace có kiểm soát:** `chat_turns` có RLS theo tenant, retention tối đa 365 ngày,
+  prune bằng script local, tắt được bằng `CHAT_HISTORY_ENABLED=false`; file export RAGAS
+  (`.jsonl.gz`) không commit.
 - **Dữ liệu nhạy cảm:** không lưu file gốc; không commit `.env`, token, chứng chỉ hay báo cáo test.
 
 Nếu phát hiện lỗ hổng, vui lòng mở issue riêng tư hoặc liên hệ chủ sở hữu thay vì công khai chi tiết khai thác.
@@ -208,6 +228,7 @@ Nếu phát hiện lỗ hổng, vui lòng mở issue riêng tư hoặc liên h�
 |---|---|
 | [`SR.md`](SR.md) | Đặc tả yêu cầu doanh nghiệp (SRS/BRD), ràng buộc phi chức năng |
 | [`AGENTS.md`](AGENTS.md) | Quy chuẩn coding agent, ràng buộc kiến trúc, quy trình kiểm thử |
+| [`history.md`](history.md) | Thay đổi và lỗi đã sửa theo từng phiên bản |
 | [`task/ROADMAP.md`](task/ROADMAP.md) | Lộ trình 3 giai đoạn và toàn bộ sprint |
 | [`ANON.md`](ANON.md) | Playbook kiến trúc & bảo mật Ultra-Lean |
 | [`DEFENSE_PLAN.md`](DEFENSE_PLAN.md) | Kế hoạch bảo vệ đồ án / phỏng vấn kiến trúc |

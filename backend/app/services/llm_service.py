@@ -17,7 +17,7 @@ import httpx
 from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core.http_client import acquire_http_client
-from app.services.prompt_service import PromptService
+from app.services.prompt_service import PromptService, ReasoningStreamSanitizer
 from app.services.quota_service import quota_manager
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,8 @@ class LLMService:
                         else:
                             answer = data["choices"][0]["message"]["content"]
 
+                        # Gemma đôi khi trả reasoning/self-check không gắn cờ thought.
+                        answer = PromptService.sanitize_answer(answer)
                         output_tokens = len(answer) // 4
                         return answer, estimated_input_tokens + output_tokens
                 except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError, KeyError, IndexError) as exc:
@@ -235,6 +237,7 @@ class LLMService:
             last_exc: Optional[Exception] = None
 
             for attempt in range(4):
+                sanitizer = ReasoningStreamSanitizer()
                 try:
                     async with acquire_http_client(transport=transport) as http_client:
                         async with http_client.stream("POST", endpoint, headers=headers, json=payload, timeout=60.0) as resp:
@@ -260,9 +263,12 @@ class LLMService:
                                     else:
                                         text_part = chunk["choices"][0].get("delta", {}).get("content", "")
                                     if text_part:
-                                        yield text_part
+                                        for clean_piece in sanitizer.feed(text_part):
+                                            yield clean_piece
                                 except (json.JSONDecodeError, KeyError, IndexError):
                                     continue
+                            for clean_piece in sanitizer.finish():
+                                yield clean_piece
                             return
                 except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
                     last_exc = exc
