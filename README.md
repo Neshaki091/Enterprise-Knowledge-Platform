@@ -148,6 +148,14 @@ python endpoint_test/run_all_endpoint_tests.py
 # Báo cáo: endpoint_test/endpoint_test_report_<YYYY-MM-DD>.md (không commit)
 ```
 
+Load/soak/stress và kiểm tra toàn vẹn ingest: xem
+[`load_tests/README.md`](load_tests/README.md). Không chạy load generator trên VPS
+backend; dùng staging/laptop và dữ liệu synthetic.
+
+Windows: double-click `run_load_tests.cmd` (load/soak/stress) hoặc
+`run_phase3_ux_sim.cmd` (UX simulation) ở thư mục gốc repo. Hai file tự dùng
+`.venv`, kiểm tra backend/k6 và cảnh báo trước khi chạy vào target không phải local.
+
 ---
 
 ## Lưu trace hội thoại & xuất RAGAS

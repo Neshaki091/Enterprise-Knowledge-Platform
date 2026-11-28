@@ -98,3 +98,10 @@ SR (1).md
 
 # CI-CD: giá trị hạ tầng cá nhân (copy từ CI-CD/config.example.sh)
 CI-CD/config.sh
+
+# Load test runtime: synthetic credentials, fixtures sinh tự động, report thô
+load_tests/.runtime/
+load_tests/fixtures/generated/
+load_tests/reports/*.json
+load_tests/reports/*.csv
+!load_tests/reports/.gitkeep
