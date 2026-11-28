@@ -43,7 +43,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check Schedule Window (2026-11-30 to 2027-01-30 UTC+7)
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TODAY_VN="$(date -u -d '+7 hours' +%Y-%m-%d)"
+          if [[ "$TODAY_VN" < "2026-11-30" || "$TODAY_VN" > "2027-01-30" ]]; then
+            echo "Ngoài khung thời gian tự động (2026-11-30 -> 2027-01-30). Bỏ qua."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout Repository
+        if: steps.window.outputs.active == 'true'
         uses: actions/checkout@v4
 
       - name: Setup Python 3.12
@@ -61,6 +77,7 @@ jobs:
           fi
 
       - name: Run Phase 3 UX Simulation & MCP Verification
+        if: steps.window.outputs.active == 'true'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SIM_MCP_DB_URL: ${{ secrets.SIM_MCP_DB_URL }}
@@ -71,8 +88,8 @@ jobs:
           SIM_LLM_RPM_LIMIT: ${{ vars.SIM_LLM_RPM_LIMIT || '25' }}
           SIM_LLM_RPD_LIMIT: ${{ vars.SIM_LLM_RPD_LIMIT || '480' }}
           SIM_MAX_LLM_QUERIES: ${{ inputs.max_llm_queries || vars.SIM_MAX_LLM_QUERIES || '20' }}
-          SIM_MCP_ALLOWED_TABLES: ${{ vars.SIM_MCP_ALLOWED_TABLES || 'ux_sim_events,ux_sim_users,ux_sim_runs' }}
-          SIM_MCP_TEST_SQL: ${{ vars.SIM_MCP_TEST_SQL || 'SELECT id, user_id, action_type, http_status, total_latency_ms FROM ux_sim_events ORDER BY timestamp_utc DESC LIMIT 5' }}
+          SIM_MCP_ALLOWED_TABLES: ${{ vars.SIM_MCP_ALLOWED_TABLES || 'documents,subjects,chat_sessions,chat_messages,evaluation_results,feedbacks' }}
+          SIM_MCP_TEST_SQL: ${{ vars.SIM_MCP_TEST_SQL || 'SELECT id, title, file_type, status, created_at FROM documents ORDER BY created_at DESC LIMIT 5' }}
         run: |
           TARGET_URL="${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'https://api-e-k-p-neshaki091.duckdns.org' }}"
           EXTRA_FLAGS=""
@@ -88,7 +105,7 @@ jobs:
             $EXTRA_FLAGS
 
       - name: Upload Phase 3 UX Report Artifact
-        if: always()
+        if: always() && steps.window.outputs.active == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: phase3-ux-report-${{ github.run_number }}
