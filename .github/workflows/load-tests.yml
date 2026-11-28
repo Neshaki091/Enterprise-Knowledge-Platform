@@ -1,0 +1,89 @@
+name: Phase 3 - Load, Soak & Security Probes (k6)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_api_url:
+        description: "Backend URL (vd: https://api-e-k-p-neshaki091.duckdns.org)"
+        required: true
+        default: "https://api-e-k-p-neshaki091.duckdns.org"
+      suite:
+        description: "Kịch bản chạy: soak | saturation | spike | probes_only"
+        required: true
+        type: choice
+        options:
+          - soak
+          - saturation
+          - spike
+          - probes_only
+        default: "soak"
+      vus:
+        description: "Số VU đồng thời cho soak (mặc định 3, nằm trong 3-5 phiên)"
+        required: false
+        default: "3"
+      duration:
+        description: "Thời lượng soak (vd: 30m, 1h, 2h)"
+        required: false
+        default: "30m"
+      chat_mode:
+        description: "Chế độ chat cho k6 soak: mock (không tốn quota Gemini) | hybrid"
+        required: false
+        default: "mock"
+  # Bỏ comment 2 dòng dưới khi sẵn sàng chạy Soak 5 ngày làm việc liên tiếp (09:30 UTC+7):
+  # schedule:
+  #   - cron: "30 2 * * 1-5"
+
+jobs:
+  load-test:
+    name: Run k6 & Python Load/Security Probes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Minimal Python Probe Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Seed Synthetic Tenants & Run IDOR / SSE Probes
+        run: |
+          TARGET_URL="${{ inputs.target_api_url || vars.SIM_TARGET_API_URL || 'https://api-e-k-p-neshaki091.duckdns.org' }}"
+          mkdir -p load_tests/reports
+          python load_tests/seed_test_data.py --base-url "$TARGET_URL"
+          python load_tests/idor_probe.py
+          python load_tests/sse_probe.py
+
+      - name: Run k6 Suite (${{ inputs.suite || 'soak' }})
+        if: "${{ inputs.suite != 'probes_only' }}"
+        run: |
+          SUITE="${{ inputs.suite || 'soak' }}"
+          VUS="${{ inputs.vus || '3' }}"
+          DURATION="${{ inputs.duration || '30m' }}"
+          CHAT_MODE="${{ inputs.chat_mode || 'mock' }}"
+          if [ "$SUITE" = "saturation" ]; then
+            k6 run --summary-export load_tests/reports/k6_saturation.json load_tests/k6/saturation.js
+          elif [ "$SUITE" = "spike" ]; then
+            k6 run --summary-export load_tests/reports/k6_spike.json load_tests/k6/spike.js
+          else
+            k6 run -e VUS="$VUS" -e DURATION="$DURATION" -e CHAT_MODE="$CHAT_MODE" \
+              --summary-export load_tests/reports/k6_soak.json \
+              load_tests/k6/journey1_employee.js
+          fi
+
+      - name: Upload Load Test Reports Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-reports-${{ inputs.suite || 'soak' }}-${{ github.run_number }}
+          path: load_tests/reports/
+          retention-days: 30
